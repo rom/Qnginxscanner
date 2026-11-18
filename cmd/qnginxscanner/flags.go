@@ -127,7 +127,7 @@ func bindFlags(fs *flag.FlagSet) *flags {
 	f := &flags{}
 	fs.StringVar(&f.configPath, "config", "", "path to a YAML configuration file")
 	fs.StringVar(&f.ports, "ports", "", "ports to check: 80 | 80,443 | 8000-8100 | mix (default: common web ports)")
-	fs.StringVar(&f.mode, "mode", "detect", "scan depth: detect (is it nginx?) or deep (version, protocols, misconfigurations, vulns incl. NGINX2Root)")
+	fs.StringVar(&f.mode, "mode", "deep", "scan depth: deep (version, protocols, misconfigurations, vulns incl. NGINX2Root) or detect (only: is it nginx?)")
 	fs.StringVar(&f.tls, "tls", "auto", "TLS handling: auto | on | off")
 	fs.DurationVar(&f.timeout, "timeout", 10*time.Second, "per-connection timeout (e.g. 5s, 500ms)")
 	fs.IntVar(&f.concurrency, "concurrency", 50, "maximum concurrent service probes")

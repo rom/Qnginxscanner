@@ -659,6 +659,31 @@ func (a *analysis) analyzeStatusEndpoint(resp *probe.Response, u string) {
 			return
 		}
 	}
+	if m := reExporterMetrics.FindStringSubmatch(body); m != nil {
+		a.d.StatusExposed = true
+		if a.d.StatusURL == "" {
+			a.d.StatusURL = u
+		}
+		detail := "nginx Prometheus metrics are publicly readable"
+		if strings.HasPrefix(m[1], "nginx_ingress_controller_") {
+			a.addMod("ingress-nginx")
+			detail = "ingress-nginx controller metrics are publicly readable"
+			if v := reIngressVersion.FindStringSubmatch(body); v != nil {
+				a.addMod("ingress-nginx " + v[1])
+			}
+		}
+		a.addEv(Evidence{
+			Signal: "status.metrics", Source: u, Probe: "GET " + u, Status: resp.Status, Weight: 60,
+			Detail: detail, Data: m[0],
+			Where: "response body", How: "regular expression", Pattern: reExporterMetrics.String(),
+		})
+		a.addFinding(Finding{
+			ID: "metrics-exposed", Severity: "low", Title: "nginx metrics endpoint is publicly exposed", URL: u,
+			Detail:      "Prometheus metrics for nginx are readable by anyone: traffic volumes, upstream/ingress names and build information.",
+			Remediation: "Serve metrics on an internal listener or restrict the location with allow/deny.",
+		})
+		return
+	}
 	if m := reVTSVersion.FindStringSubmatch(body); m != nil {
 		a.setVersion("nginx", m[1], "nginx-module-vts status", 3)
 		a.addMod("vts (nginx-module-vts)")
@@ -745,6 +770,26 @@ func (a *analysis) misconfigFindings(in Input) {
 			Remediation: "Set server_tokens off; (this hides the version, it does not fix anything).",
 		})
 	}
+	if a.seen["body.welcome-nginx"] || a.seen["body.welcome-openresty"] || a.seen["body.welcome-tengine"] || a.seen["body.welcome-angie"] {
+		a.addFinding(Finding{
+			ID: "default-page", Severity: "info", Title: "Default welcome page is served", URL: in.TargetURL,
+			Detail:      "The server answers with the stock welcome page: it is installed but has no site configured on this name/port (often a forgotten or default virtual host).",
+			Remediation: "Remove the default server block or make the default server return 444/404.",
+		})
+	}
+	a.sensitiveFileFindings(in)
+	for _, raw := range in.Raw {
+		if raw == nil || raw.Err != "" || raw.Name != "foreign-host" || raw.Status < 300 || raw.Status > 399 {
+			continue
+		}
+		if loc := raw.HeaderGet("Location"); strings.Contains(strings.ToLower(loc), ForeignHost) {
+			a.addFinding(Finding{
+				ID: "host-header-redirect", Severity: "low", Title: "Redirects are built from the client-supplied Host header", URL: in.TargetURL,
+				Detail:      "A request with an arbitrary Host header was answered with a redirect to that host (Location: " + clip(loc, 120) + "). Behind a shared cache or in password-reset style links this enables redirect/cache poisoning.",
+				Remediation: "Use a fixed name in redirects (return 301 https://example.com$request_uri;) and add a default_server that rejects unknown hosts (return 444;).",
+			})
+		}
+	}
 	if a.seen["body.autoindex"] {
 		a.addFinding(Finding{
 			ID: "autoindex-enabled", Severity: "low", Title: "Directory listing is enabled (autoindex on)", URL: in.TargetURL,
@@ -753,6 +798,16 @@ func (a *analysis) misconfigFindings(in Input) {
 		})
 	}
 	for _, p := range in.Alias {
+		if o, pi := p.Original, p.PathInfo; o != nil && pi != nil && o.Err == "" && pi.Err == "" &&
+			o.Status == 200 && pi.Status == 200 && len(o.Body) > 0 && bytes.Equal(o.Body, pi.Body) &&
+			strings.HasPrefix(strings.ToLower(pi.HeaderGet("Content-Type")), "text/html") &&
+			!strings.HasPrefix(strings.ToLower(o.HeaderGet("Content-Type")), "text/html") {
+			a.addFinding(Finding{
+				ID: "php-pathinfo", Severity: "high", Title: "Static files are passed to PHP (nginx + PHP-FPM path-info misconfiguration)", URL: pi.RequestURL,
+				Detail:      p.Candidate.Original + PathInfoSuffix + " returns the static file's content as text/html: the PHP location matches the trailing \".php\" and PHP executes the real file. Any file a user can upload (an image with embedded PHP) can be run as code.",
+				Remediation: "In the PHP location add try_files $uri =404; (or fastcgi_split_path_info with a file check), and set cgi.fix_pathinfo=0.",
+			})
+		}
 		o, t, c := p.Original, p.Traversed, p.Control
 		if o == nil || t == nil || c == nil || o.Err != "" || t.Err != "" || c.Err != "" {
 			continue
@@ -778,6 +833,39 @@ func (a *analysis) misconfigFindings(in Input) {
 			Remediation: "Use $request_uri (not $uri/$document_uri) when building redirects or headers.",
 		})
 	}
+}
+
+// sensitiveFileFindings reports files nginx serves that should never be
+// public. Content is validated per file and compared with the soft-404
+// baseline, and is never copied into the finding.
+func (a *analysis) sensitiveFileFindings(in Input) {
+	var baseline []byte
+	if in.NotFound != nil {
+		baseline = in.NotFound.Body
+	}
+	for _, sf := range SensitiveFiles() {
+		for u, resp := range in.Extra {
+			if resp == nil || resp.Err != "" || resp.Status != 200 || !strings.HasSuffix(u, sf.Path) || strings.HasPrefix(u, "OPTIONS ") {
+				continue
+			}
+			body := resp.Body
+			if len(body) == 0 || (len(baseline) > 0 && bytes.Equal(body, baseline)) {
+				continue
+			}
+			text := string(body)
+			if strings.Contains(strings.ToLower(clip(text, 512)), "<html") || !sf.Match.MatchString(text) {
+				continue
+			}
+			a.addFinding(Finding{ID: sf.ID, Severity: sf.Severity, Title: sf.Title, Detail: sf.Detail, URL: u, Remediation: sf.Remediation})
+		}
+	}
+}
+
+func clip(s string, n int) string {
+	if len(s) > n {
+		return s[:n] + "…"
+	}
+	return s
 }
 
 // correlate applies the catalogue: release support status, version-based

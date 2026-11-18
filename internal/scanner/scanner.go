@@ -155,7 +155,7 @@ type DNSResolver interface {
 // withDefaults fills unset options with sensible values.
 func (o Options) withDefaults() Options {
 	if o.Mode == "" {
-		o.Mode = ModeDetect
+		o.Mode = ModeDeep
 	}
 	if o.TLSMode == "" {
 		o.TLSMode = TLSAuto
@@ -709,13 +709,19 @@ func deepProbes(ctx context.Context, fetcher *probe.Fetcher, base string, root *
 		return "budget"
 	}
 	in.CRLF = get(base + nginx.CRLFProbePath)
+	for _, sf := range nginx.SensitiveFiles() {
+		if exhausted() {
+			return "budget"
+		}
+		in.Extra[base+sf.Path] = get(base + sf.Path)
+	}
 
 	pageURL := base + "/"
 	if strings.HasPrefix(root.FinalURL, base+"/") {
 		pageURL = root.FinalURL
 	}
 	for _, c := range nginx.AliasCandidates(pageURL, root.BodyString()) {
-		if opts.RequestBudget > 0 && spent+3 > opts.RequestBudget {
+		if opts.RequestBudget > 0 && spent+4 > opts.RequestBudget {
 			return "budget"
 		}
 		ap := nginx.AliasProbe{Candidate: c, Original: get(base + c.Original)}
@@ -723,6 +729,7 @@ func deepProbes(ctx context.Context, fetcher *probe.Fetcher, base string, root *
 		if ap.Original.Err == "" && ap.Original.Status == 200 {
 			ap.Traversed = get(base + c.Traversed)
 			ap.Control = get(base + c.Control)
+			ap.PathInfo = get(base + c.Original + nginx.PathInfoSuffix)
 		}
 		in.Alias = append(in.Alias, ap)
 	}
@@ -764,7 +771,7 @@ func corpusService(target string, in nginx.Input) corpus.Service {
 			Segment: a.Candidate.Segment, OriginalPath: a.Candidate.Original,
 			TraversedPath: a.Candidate.Traversed, ControlPath: a.Candidate.Control,
 			Original: corpus.FromResponse(a.Original), Traversed: corpus.FromResponse(a.Traversed),
-			Control: corpus.FromResponse(a.Control),
+			Control: corpus.FromResponse(a.Control), PathInfo: corpus.FromResponse(a.PathInfo),
 		})
 	}
 	return s

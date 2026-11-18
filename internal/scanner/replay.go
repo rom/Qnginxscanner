@@ -125,7 +125,7 @@ func replayService(svc corpus.Service, opts Options) ServiceResult {
 	for _, a := range svc.Alias {
 		in.Alias = append(in.Alias, nginx.AliasProbe{
 			Candidate: nginx.AliasCandidate{Segment: a.Segment, Original: a.OriginalPath, Traversed: a.TraversedPath, Control: a.ControlPath},
-			Original:  a.Original.ToResponse(), Traversed: a.Traversed.ToResponse(), Control: a.Control.ToResponse(),
+			Original:  a.Original.ToResponse(), Traversed: a.Traversed.ToResponse(), Control: a.Control.ToResponse(), PathInfo: a.PathInfo.ToResponse(),
 		})
 	}
 	res.Nginx = nginx.Analyze(in)

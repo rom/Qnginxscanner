@@ -113,20 +113,9 @@ func run(args []string) error {
 		return err
 	}
 
-	// Web mode.
-	if webEnabled {
-		srv := web.NewServer(listen)
-		if f.webAuth != "" {
-			u, p := splitColon(f.webAuth)
-			srv.SetAuth(u, p)
-		}
-		fmt.Fprintf(os.Stderr, "qnginxscanner web UI listening on http://%s/\n", displayAddr(listen))
-		return srv.ListenAndServe()
-	}
-
 	// Build the vulnerability catalogue, merging any external feeds (native,
 	// OSV or CSAF — auto-detected). Feeds shape correlation, so they are loaded
-	// before both a live scan and an offline replay.
+	// before a live scan, an offline replay and the web server alike.
 	if len(f.vulnFeeds) > 0 {
 		cat := nginx.DefaultCatalog()
 		for _, src := range f.vulnFeeds {
@@ -137,6 +126,18 @@ func run(args []string) error {
 			cat.Merge(feed)
 		}
 		opts.Catalog = cat
+	}
+
+	// Web mode.
+	if webEnabled {
+		srv := web.NewServer(listen)
+		if f.webAuth != "" {
+			u, p := splitColon(f.webAuth)
+			srv.SetAuth(u, p)
+		}
+		srv.SetCatalog(opts.Catalog)
+		fmt.Fprintf(os.Stderr, "qnginxscanner web UI listening on http://%s/\n", displayAddr(listen))
+		return srv.ListenAndServe()
 	}
 
 	// Offline replay: run a recorded corpus back through detection with no

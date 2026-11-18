@@ -73,6 +73,7 @@ type AliasCheck struct {
 	Original      *Response `json:"original,omitempty"`
 	Traversed     *Response `json:"traversed,omitempty"`
 	Control       *Response `json:"control,omitempty"`
+	PathInfo      *Response `json:"path_info,omitempty"`
 }
 
 // Corpus is a saved set of per-service detection inputs plus provenance.
@@ -202,6 +203,7 @@ func (s *Service) sanitize() {
 		sanitizeResponse(a.Original)
 		sanitizeResponse(a.Traversed)
 		sanitizeResponse(a.Control)
+		sanitizeResponse(a.PathInfo)
 	}
 	for _, raw := range s.Raw {
 		if raw == nil {

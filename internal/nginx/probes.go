@@ -31,8 +31,78 @@ func StatusProbePaths() []string {
 		"/server-status",
 		"/api/",
 		"/status/format/json",
+		"/metrics",
 	}
 }
+
+// SensitiveFile is a file that nginx serves like any other static file unless
+// the configuration denies it — unlike Apache, nginx has no built-in rule for
+// dotfiles or .ht* files. Match validates the content so a soft-404 or a
+// catch-all page is never reported.
+type SensitiveFile struct {
+	ID          string
+	Path        string
+	Severity    string
+	Title       string
+	Detail      string
+	Remediation string
+	Match       *regexp.Regexp
+}
+
+const denyDotfiles = "Deny hidden files: location ~ /\\.(?!well-known) { deny all; } — and keep such files out of the web root."
+
+// SensitiveFiles are the exposure checks issued in deep mode. Each is a single
+// GET; only the fact of exposure is reported, never the file's content.
+func SensitiveFiles() []SensitiveFile {
+	return []SensitiveFile{
+		{
+			ID: "git-exposed", Path: "/.git/HEAD", Severity: "high",
+			Title:       "Git repository is exposed (/.git/)",
+			Detail:      "/.git/HEAD is served, so the repository — source code, history and any committed secrets — can be downloaded.",
+			Remediation: denyDotfiles,
+			Match:       regexp.MustCompile(`^(?:ref: refs/[\w./-]+|[0-9a-f]{40})\s*$`),
+		},
+		{
+			ID: "htpasswd-exposed", Path: "/.htpasswd", Severity: "high",
+			Title:       "Password file is exposed (/.htpasswd)",
+			Detail:      "/.htpasswd is served: user names and password hashes can be downloaded and cracked offline. nginx does not protect .ht* files by default.",
+			Remediation: "Move the file outside the web root and deny it: location ~ /\\.ht { deny all; }",
+			Match:       regexp.MustCompile(`(?m)^[^:\s<>]{1,64}:(?:\$apr1\$|\$2[aby]\$|\$[156]\$|\{SHA\}|\{SSHA\}|[A-Za-z0-9./]{13}\s*$)`),
+		},
+		{
+			ID: "htaccess-exposed", Path: "/.htaccess", Severity: "low",
+			Title:       "Apache .htaccess file is served (/.htaccess)",
+			Detail:      "/.htaccess is served as a plain file. nginx ignores .htaccess, so any access rules in it are NOT enforced, and its contents (rewrite rules, protected paths) are disclosed.",
+			Remediation: "Translate the rules into nginx configuration and deny the file: location ~ /\\.ht { deny all; }",
+			Match:       regexp.MustCompile(`(?im)^\s*(?:RewriteEngine|RewriteRule|RewriteCond|AuthType|AuthUserFile|Require\s|Deny from|Order\s+(?:allow|deny)|Options\s+[-+]?\w|<IfModule|<Files|DirectoryIndex|ErrorDocument)\b`),
+		},
+		{
+			ID: "env-exposed", Path: "/.env", Severity: "high",
+			Title:       "Environment file is exposed (/.env)",
+			Detail:      "/.env is served; such files usually hold database passwords, API keys and application secrets.",
+			Remediation: denyDotfiles,
+			Match:       regexp.MustCompile(`(?m)\A(?:\s*#[^\n]*\n|\s*\n)*(?:export\s+)?[A-Z][A-Z0-9_]{1,63}=[^\n<]*(?:\n|\z)`),
+		},
+		{
+			ID: "nginx-conf-exposed", Path: "/nginx.conf", Severity: "medium",
+			Title:       "nginx configuration is served (/nginx.conf)",
+			Detail:      "/nginx.conf is served, disclosing the server's configuration (upstreams, internal paths, access rules). This usually means the web root points at the nginx configuration directory.",
+			Remediation: "Point root at the site's document directory, not at /etc/nginx or the nginx prefix.",
+			Match:       regexp.MustCompile(`(?s)\b(?:worker_processes|events\s*\{).*\bhttp\s*\{|\bhttp\s*\{.*\bserver\s*\{`),
+		},
+	}
+}
+
+// PathInfoSuffix is appended to a static asset to test the classic
+// nginx + PHP-FPM misconfiguration (a "location ~ \.php$" block passing
+// "/file.png/x.php" to PHP with cgi.fix_pathinfo enabled): PHP then runs the
+// static file, which echoes it back verbatim as text/html.
+const PathInfoSuffix = "/qnginxscanner.php"
+
+// ForeignHost is the Host header of the "foreign-host" raw probe. A redirect
+// whose Location carries it back shows the server builds redirects from the
+// client-supplied Host ($host / $http_host).
+const ForeignHost = "qnginxscanner-probe.invalid"
 
 // PlusAPIFollowUp inspects a /api/ response and, when it is the NGINX Plus API
 // version list, returns the path that reports the nginx version and build.
@@ -78,6 +148,8 @@ type RawProbe struct {
 //	                distinctive "plain HTTP request was sent to HTTPS port".
 //	unknown-method  (deep) an unknown method: nginx's static handler replies
 //	                "405 Not Allowed".
+//	foreign-host    (deep) a request for an unknown Host: shows whether
+//	                redirects are built from the client-supplied Host.
 //	long-uri        (deep) a request line above nginx's default 8k header
 //	                buffer: "414 Request-URI Too Large".
 func RawProbes(hostHeader, userAgent string, tls, deep bool) []RawProbe {
@@ -91,6 +163,7 @@ func RawProbes(hostHeader, userAgent string, tls, deep bool) []RawProbe {
 	}
 	if deep {
 		probes = append(probes,
+			RawProbe{Name: "foreign-host", Payload: []byte("GET / HTTP/1.1\r\nHost: " + ForeignHost + "\r\n" + common)},
 			RawProbe{Name: "unknown-method", Payload: []byte("QNGX / HTTP/1.1\r\n" + withHost)},
 			RawProbe{Name: "long-uri", Payload: []byte("GET /" + strings.Repeat("a", 9000) + " HTTP/1.1\r\n" + withHost)},
 		)
@@ -114,6 +187,8 @@ type AliasProbe struct {
 	Original  *probe.Response
 	Traversed *probe.Response
 	Control   *probe.Response
+	// PathInfo is the asset re-requested with PathInfoSuffix appended.
+	PathInfo *probe.Response
 }
 
 var reAssetRef = regexp.MustCompile(`(?i)(?:src|href)\s*=\s*["']([^"'#?\s]+\.(?:css|js|png|jpe?g|gif|svg|ico|woff2?|map|webp))(?:\?[^"']*)?["']`)
