@@ -25,13 +25,16 @@ targets:
 # Add 25,110,143 (with `banners: true`) to look for the nginx mail proxy.
 ports: "80,443,8080,8000-8010"
 
-# Scan depth:
-#   detect — only decide whether a service is nginx (or an nginx derivative)
-#   deep   — also fingerprint version, release branch, protocols and modules,
-#            check for misconfigurations (exposed status pages, alias
-#            traversal, CRLF header injection) and correlate known
-#            version-based vulnerabilities, including the NGINX2Root chain
-mode: detect
+# Scan depth (deep is the built-in default):
+#   deep   — decide whether a service is nginx (or an nginx derivative) and
+#            also fingerprint version, release branch, protocols and modules,
+#            check for misconfigurations (exposed status/metrics pages and
+#            sensitive files, alias traversal, CRLF header injection, PHP
+#            path-info) and correlate known version-based vulnerabilities,
+#            including the NGINX2Root chain
+#   detect — lighter: only decide whether a service is nginx, with a handful
+#            of requests per service
+mode: deep
 
 # TLS handling: auto (infer from the port), on (force https) or off (force http).
 tls: auto
@@ -94,7 +97,7 @@ jitter: 0s
 # Extra attempts on a transient network error.
 retries: 0
 # Cap the optional deep-mode probes per service (status endpoints, the CRLF
-# check, alias checks); they stop once the budget is spent (0 = no cap).
+# check, sensitive-file checks, alias/path-info checks); they stop once the budget is spent (0 = no cap).
 # A host answering 429/503 makes the optional probes back off entirely.
 request_budget: 0
 
@@ -134,7 +137,8 @@ sni: ""
 # External vulnerability feeds (file or URL): the native
 # qnginxscanner-vuln-feed/1 schema, OSV records or CSAF 2.0 advisories. Entries
 # are added to the built-in nginx.org advisory catalogue; a feed may also
-# override the supported branches and their latest releases.
+# override the supported branches and their latest releases. With web.enabled
+# (or --web) the merged catalogue is used by every scan the GUI runs.
 # See docs/vuln-feed.example.json.
 vuln_feeds:
   # - docs/vuln-feed.example.json

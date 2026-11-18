@@ -98,9 +98,10 @@ targets ──► target.Expand / dnsenum ──► allow/block filter ──►
                               ▼                                        (mail proxy)
           GET guaranteed-404 · security.txt · raw probes (no-host, plain-on-tls)
                               │
-                 deep mode:   ▼
-          OPTIONS · raw probes (unknown-method, long-uri) · HTTP/2 preface
-          status paths · CRLF check · alias checks   (optional ones budgeted)
+       deep mode (default):   ▼
+          OPTIONS · raw probes (foreign-host, unknown-method, long-uri) · HTTP/2 preface
+          status paths · CRLF check · sensitive files · alias + path-info checks
+                                                      (optional ones budgeted)
                               │
               ┌───────────────┴────────────────┐
               ▼                                ▼
@@ -116,7 +117,8 @@ targets ──► target.Expand / dnsenum ──► allow/block filter ──►
 
 The scanner collects responses; `nginx.Analyze` is a pure function of its
 `Input` (root response, 404 response, raw replies, HTTP/2 fingerprint, deep
-probe responses, alias and CRLF check responses, or a banner). This is what
+probe responses, alias, path-info and CRLF check responses, or a banner). This
+is what
 makes offline replay possible: a recorded `Input` reproduces the same
 `Detection`.
 
@@ -147,7 +149,10 @@ web server forwards the events to the browser as NDJSON.
 ## Probes
 
 The probe list is defined in `internal/nginx/probes.go` so that detection and
-the scanner agree on what is collected. All probes are read-only.
+the scanner agree on what is collected. All probes are read-only. `deep` is
+the default mode (`Options.withDefaults`, the CLI flag, the web form and the
+web API for an omitted or unknown `mode`); `detect` is the opt-in subset marked
+"both" below.
 
 | Probe | Mode | Kind | What it yields |
 | --- | --- | --- | --- |
@@ -159,10 +164,12 @@ the scanner agree on what is collected. All probes are read-only.
 | `OPTIONS /` | deep | HTTP | WebDAV indicators |
 | `unknown-method` | deep | raw | `QNGX / HTTP/1.1`: `405 Not Allowed` |
 | `long-uri` | deep | raw | 9000-byte URI: `414 Request-URI Too Large` |
+| `foreign-host` | deep | raw | `GET /` with `Host: qnginxscanner-probe.invalid`: a redirect whose `Location` carries that host shows redirects built from `$host`/`$http_host` |
 | HTTP/2 preface | deep | raw | server `SETTINGS` + `WINDOW_UPDATE`; no request |
-| status paths (8) | deep, optional | HTTP | `stub_status`, NGINX Plus API (+ one follow-up), nginx-module-vts |
+| status paths (9) | deep, optional | HTTP | `stub_status`, NGINX Plus API (+ one follow-up), nginx-module-vts, Prometheus metrics (`/metrics`) |
 | CRLF check | deep, optional | HTTP | `GET /%0D%0AX-Qnginxscanner-Probe:%20crlf` |
-| alias checks (≤ 3 × 3 requests) | deep, optional | HTTP | off-by-slash `alias` traversal |
+| sensitive files (5) | deep, optional | HTTP | `/.git/HEAD`, `/.htpasswd`, `/.htaccess`, `/.env`, `/nginx.conf`; content validated, never reported |
+| alias checks (≤ 3 × 4 requests) | deep, optional | HTTP | off-by-slash `alias` traversal; the fourth request (`<asset>/qnginxscanner.php`) is the PHP path-info check |
 | banner grab | both, `--banners`, non-HTTP ports | TCP | mail proxy greeting |
 
 **Why raw probes.** Go's `net/http` normalises what it receives: header order
@@ -187,16 +194,27 @@ attribute a change to it. Raw probes need a direct connection and return an
 error when a proxy is configured, which detection ignores. Optional deep probes
 are counted against `--request-budget` and skipped entirely when the root or
 404 response is `429`/`503`; `ServiceResult.DiscoveryLimited` records `budget`
-or `rate-limited`.
+or `rate-limited`. An alias candidate is only started when four requests
+remain in the budget.
 
-**Safety of the two active checks.** The CRLF probe asks for a path whose
+**Safety of the active checks.** The CRLF probe asks for a path whose
 decoded form ends in CR LF plus a header line; a vulnerable configuration
 echoes that header in its own response and nothing else is affected. The alias
 check takes static assets the page already links to and re-requests them as
 `/<seg>../<seg>/<file>`: with `location /seg { alias …/seg/; }` this resolves
 to the very same public file, which proves the traversal without reading
 anything private. A control request (`/<seg>../qnginxscanner-nx/<file>`) and a
-byte-for-byte body comparison exclude catch-all sites.
+byte-for-byte body comparison exclude catch-all sites. The path-info check
+re-requests the same public asset as `<asset>/qnginxscanner.php`
+(`PathInfoSuffix`): when a `location ~ \.php$` block hands that to PHP-FPM
+with `cgi.fix_pathinfo` enabled, PHP runs the static file and echoes it back —
+the same bytes, now `text/html` — which proves the misconfiguration without
+uploading or executing anything. The sensitive-file checks (`SensitiveFiles`)
+are single `GET`s whose body must match the file's format (a regular
+expression per file), so a soft-404 is not reported; only the fact of exposure
+goes into the finding, never the content. The `foreign-host` raw probe sends a
+reserved `.invalid` host name and only looks at the `Location` of its own
+reply.
 
 ## Detection model
 
@@ -257,6 +275,7 @@ probe:
 | `status.stub` | 85 | `stub_status` output; counters are parsed |
 | `api.nginx-plus` | 90 | NGINX Plus API object with `version` and a `build` starting `nginx-plus` |
 | `status.vts` | 85 | nginx-module-vts JSON with `nginxVersion` |
+| `status.metrics` | 60 | Prometheus metrics of nginx-prometheus-exporter, ingress-nginx (`nginx_ingress_controller_*`) or the vts exporter at `/metrics` |
 
 **Headers and cookies**
 
@@ -300,16 +319,23 @@ weight-clamped, and their `id@version` is recorded in `Meta.SignaturePacks`.
   port); `h3 (advertised)` from `Alt-Svc`; `mail (…)` from a banner.
 - **Modules**: only what was observed — `http_ssl` (TLS), `http_v2`, `http_v3`,
   `http_stub_status`, `http_autoindex`, `http_dav` (from `OPTIONS`), cache
-  headers, `ngx_pagespeed`, `ingress-nginx`, `lua (OpenResty)`, `vts`, the
-  NGINX Plus API, `mail`.
+  headers, `ngx_pagespeed`, `ingress-nginx` (plus `ingress-nginx <version>`
+  when its metrics disclose the controller version), `lua (OpenResty)`, `vts`,
+  the NGINX Plus API, `mail`.
 
 ### Findings
 
 Findings are derived in deep mode from observed behaviour, not from the
 version: `stub-status-exposed` (low), `plus-api-exposed` (medium),
-`vts-status-exposed` (low), `version-disclosure` (info), `autoindex-enabled`
-(low), `alias-traversal` (high) and `crlf-injection` (medium). Each carries a
-detail, a URL and a remediation hint, and is de-duplicated by id.
+`vts-status-exposed` (low), `metrics-exposed` (low), `version-disclosure`
+(info), `default-page` (info, a stock welcome page), `autoindex-enabled`
+(low), `alias-traversal` (high), `crlf-injection` (medium), `php-pathinfo`
+(high, static files handed to PHP-FPM), `host-header-redirect` (low, from the
+`foreign-host` raw probe) and the exposed-file findings `git-exposed` (high),
+`htpasswd-exposed` (high), `env-exposed` (high), `nginx-conf-exposed` (medium)
+and `htaccess-exposed` (low; nginx ignores `.htaccess`, so its rules are not
+enforced, and nginx has no default protection for `.ht*` or dotfiles). Each
+carries a detail, a URL and a remediation hint, and is de-duplicated by id.
 
 ## Vulnerability catalogue
 
@@ -355,7 +381,9 @@ behind its latest release is `outdated`.
 appended, `supported` replaces the branch set, `latest` overrides per branch.
 `ParseFeed` sniffs the JSON and accepts the native `qnginxscanner-vuln-feed/1`
 schema, OSV records (single or array) and CSAF 2.0; `feeds_import.go` maps the
-latter two into `FeedEntry`, keeping only nginx packages.
+latter two into `FeedEntry`, keeping only nginx packages. The merged catalogue
+is used by live scans, by replay and, in `--web` mode, by every GUI scan and
+by origin-compare (`web.Server.SetCatalog`).
 
 ### NGINX2Root assessment
 
@@ -441,7 +469,7 @@ Write failures are best-effort and never abort a scan.
 
 With `--record-corpus`, the scanner snapshots each service's `nginx.Input` into
 a `corpus.Service` (root, 404, deep probe responses, raw replies, HTTP/2
-fingerprint, alias and CRLF responses, or the banner). Cookie values and
+fingerprint, alias, path-info and CRLF responses, or the banner). Cookie values and
 credential headers are redacted; bodies are kept byte-exact (base64), which the
 alias comparison requires. `scanner.Replay` rebuilds the `Input`s and calls
 `nginx.Analyze`, using the current build's catalogue, feeds and signature
@@ -534,8 +562,10 @@ merging flag precedence.
 ## Security considerations
 
 - The tool only reads; it never submits forms, uploads, or attempts
-  exploitation. The two active misconfiguration checks are constructed so that
-  a positive result discloses nothing beyond what was already public.
+  exploitation. The active misconfiguration checks (CRLF, alias, path-info)
+  are constructed so that a positive result discloses nothing beyond what was
+  already public, and the content of an exposed sensitive file is validated
+  but never stored in the result.
 - The raw probes are syntactically unusual on purpose and may be logged or
   counted by the target's defences; `--no-raw` exists for environments where
   only well-formed HTTP is acceptable.
