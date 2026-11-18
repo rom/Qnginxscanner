@@ -1,7 +1,7 @@
 .\" Manpage for qnginxscanner.
-.TH QNGINXSCANNER 1 "2026-10-21" "qnginxscanner 0.1.0" "User Commands"
+.TH QNGINXSCANNER 1 "2026-11-18" "qnginxscanner 1.0.0" "User Commands"
 .SH NAME
-qnginxscanner \- detect PHP-backed network services, collect evidence and report
+qnginxscanner \- detect nginx servers, fingerprint versions, flag misconfigurations and known vulnerabilities
 .SH SYNOPSIS
 .B qnginxscanner
 [\fIoptions\fR] \fItarget\fR [\fItarget\fR ...]
@@ -13,26 +13,38 @@ qnginxscanner \- detect PHP-backed network services, collect evidence and report
 \fB\-\-config\fR \fIfile.yaml\fR
 .SH DESCRIPTION
 .B qnginxscanner
-scans network ports and HTTP(S) services to determine whether they are built
-on PHP, collects the supporting evidence, and produces machine output and
-human-readable reports.
-It is a passive fingerprinting tool: it reads banners, headers, cookies and
-response bodies and reasons about them.
+scans network ports and HTTP(S) services to decide, with auditable evidence,
+whether they are served by nginx or an nginx derivative (OpenResty, Tengine,
+Angie, freenginx, NGINX Plus, Kong, Apache APISIX), and produces machine output
+and human-readable reports.
+.PP
+Detection does not depend on the Server banner alone. It combines the banner,
+the built-in error-page template, default pages, nginx-specific messages, the
+static-file ETag format, the wire order of response headers, nginx-only reason
+phrases, the HTTP/2 SETTINGS fingerprint, exposed status endpoints,
+nginx-related headers and cookies, and the mail proxy's default greetings.
+Each signal has a weight; the weights add up to a confidence from 0 to 100
+(\fBconfirmed\fR at 70 or more, \fBlikely\fR at 50, \fBpossible\fR at 25).
+.PP
 In
 .B deep
-mode it also fingerprints the PHP version and variant, enumerates extensions
-and server modules, evaluates end-of-life status, and correlates known
-version-based vulnerabilities.
-It never attempts to exploit anything.
+mode it also fingerprints the version, release branch, protocols and modules,
+checks for misconfigurations (exposed status pages, alias traversal, CRLF
+header injection, directory listing), evaluates the release lifecycle, and
+correlates the version against the nginx.org security advisories, including a
+dedicated assessment of the NGINX2Root chain.
+.PP
+The tool is read-only. It never attempts to exploit anything and never sends
+traffic meant to trigger a memory-safety bug.
 .PP
 It also discovers and parses a published RFC 9116
 .I security.txt
-and includes it in all output and reports.
+and identifies a reverse proxy, CDN or WAF in front of a service.
 .PP
 Only scan hosts and networks you own or are explicitly authorised to test.
 .SH TARGETS
 Each target may be a URL
-.RB ( https://example.com/app.php ),
+.RB ( https://example.com/ ),
 an IPv4 or IPv6 literal
 .RB ( 203.0.113.10 ,
 .BR 2001:db8::1 ),
@@ -52,37 +64,30 @@ which enumerates subdomains via Certificate Transparency),
 or a hostname.
 A URL target's scheme, port and path are honoured and override the port set.
 .SH OPTIONS
+.SS Scan selection
 .TP
 .BI \-\-mode " detect|deep"
-Scan depth. \fBdetect\fR (default) only decides whether a service is PHP;
-\fBdeep\fR additionally fingerprints version, extensions/modules and
-correlates vulnerabilities.
+Scan depth. \fBdetect\fR (default) only decides whether a service is nginx;
+\fBdeep\fR additionally fingerprints version, branch, protocols and modules,
+reports findings, and correlates vulnerabilities including NGINX2Root.
 .TP
 .BI \-\-ports " spec"
 Ports to check: a single port, a comma-separated list, inclusive ranges, or a
-mixture (e.g. \fB80,443,8000-8100\fR). Default: a built-in common-web-port set.
+mixture (e.g. \fB80,443,8000-8100\fR). Default: a built-in common-web-port set
+(80, 443, 8000, 8008, 8080, 8443, 8888, 3000, 5000, 9000).
 .TP
 .BI \-\-tls " auto|on|off"
 TLS handling. \fBauto\fR (default) infers from the port and falls back to the
 other scheme; \fBon\fR forces HTTPS; \fBoff\fR forces HTTP.
 .TP
-.BI \-\-format " text|json|xml|csv|sarif|ndjson"
-Machine-readable scan output format (default \fBtext\fR).
+.B \-\-no\-raw
+Skip the raw-request probes and the HTTP/2 connection-preface fingerprint, so
+that only well-formed HTTP requests are sent. Header order, reason phrases and
+the HTTP/2 fingerprint are then not available as evidence.
 .TP
-.BI \-\-out " file"
-Write scan output to \fIfile\fR instead of standard output.
-.TP
-.BI \-\-report " text|rtf|pdf|html"
-Also produce a human-readable report in the given format.
-.TP
-.BI \-\-report\-out " file"
-Write the report to \fIfile\fR (required for \fBrtf\fR and \fBpdf\fR).
-.TP
-.BI \-\-timeout " duration"
-Per-connection timeout, e.g. \fB5s\fR or \fB500ms\fR (default \fB10s\fR).
-.TP
-.BI \-\-concurrency " n"
-Maximum concurrent service probes (default \fB50\fR).
+.B \-\-banners
+Grab a short service banner from open ports that do not speak HTTP. This also
+detects the nginx mail proxy from its default POP3, IMAP and SMTP greetings.
 .TP
 .B \-\-follow
 Follow HTTP redirects while collecting evidence (default \fBtrue\fR).
@@ -93,15 +98,24 @@ Do not verify TLS certificates.
 .B \-\-security\-txt
 Look up and parse /.well-known/security.txt (default \fBtrue\fR).
 .TP
-.B \-\-include\-closed
-Include closed/filtered ports in the output.
+.BI \-\-timeout " duration"
+Per-connection timeout, e.g. \fB5s\fR or \fB500ms\fR (default \fB10s\fR).
+.SS Targets
 .TP
-.B \-\-verbose ", " \-v
-Print a line per host/port as it is probed (open/closed, PHP verdict, version),
-plus subdomain-enumeration steps.
+.BI \-\-targets\-file " file" ", " \-iL " file"
+Read targets from a file, one per line (\- for stdin). Blank lines and
+comments starting with # are ignored.
 .TP
-.B \-\-quiet ", " \-q
-Suppress progress output.
+.BI \-\-allow " pattern"
+Keep only targets whose host matches \fIpattern\fR (an exact host/IP, a CIDR
+block, or a \fB*.domain\fR / \fB.domain\fR suffix). Repeatable.
+.TP
+.BI \-\-block " pattern"
+Drop targets whose host matches \fIpattern\fR (same forms as \fB\-\-allow\fR).
+Repeatable; applied after the allow list.
+.TP
+.BI \-\-max\-hosts " n"
+Maximum hosts a single target spec may expand to.
 .TP
 .B \-\-no\-dns\-enum
 Disable subdomain enumeration for \fB*.domain\fR targets.
@@ -109,18 +123,58 @@ Disable subdomain enumeration for \fB*.domain\fR targets.
 .B \-\-verify\-subdomains
 Keep only enumerated subdomains that resolve in DNS.
 .TP
-.BI \-\-targets\-file " file" ", " \-iL " file"
-Read targets from a file, one per line ('-' for stdin). Blank lines and
-'#' comments are ignored.
-.TP
 .B \-\-resolve\-dns
 Record forward and reverse (PTR) DNS for each host.
+.SS Output
 .TP
-.B \-\-banners
-Grab a short service banner from open ports that do not speak HTTP.
+.BI \-\-format " text|json|xml|csv|sarif|ndjson"
+Machine-readable scan output format (default \fBtext\fR).
+.TP
+.BI \-\-out " file"
+Write scan output to \fIfile\fR instead of standard output. The extension
+(json, xml or txt) selects the format unless \fB\-\-format\fR is given.
+.TP
+.BI \-\-report " text|rtf|pdf|html"
+Also produce a human-readable report in the given format.
+.TP
+.BI \-\-report\-out " file"
+Write the report to \fIfile\fR (required for \fBrtf\fR, \fBpdf\fR and
+\fBhtml\fR). Without \fB\-\-report\fR, a .pdf or .rtf extension selects that
+format; anything else is written as text.
+.TP
+.BI \-\-oA " base"
+Write json/xml/csv/sarif/txt outputs and an HTML report to \fIbase\fR.*
+.TP
+.B \-\-include\-closed
+Include closed/filtered ports in the output.
+.TP
+.BI \-\-fail\-on " level"
+Exit with status 2 if the result meets \fIlevel\fR.
+\fBlow\fR, \fBmedium\fR, \fBhigh\fR, \fBcritical\fR: a vulnerability lead or
+finding is at least that severe.
+\fBeol\fR: an nginx service is on an end-of-life branch.
+\fBnginx2root\fR: an nginx service runs a version in the affected range of the
+NGINX2Root advisories. The gates use deep-mode data.
+.TP
+.BI \-\-diff " file"
+Compare against a prior JSON scan result and print the differences.
+.TP
+.BI \-\-diff\-format " text|json"
+Format for \fB\-\-diff\fR output (default text).
+.TP
+.B \-\-verbose ", " \-v
+Print a line per host/port as it is probed (open/closed, nginx verdict,
+version), plus subdomain-enumeration steps.
+.TP
+.B \-\-quiet ", " \-q
+Suppress progress output.
+.SS Politeness
+.TP
+.BI \-\-concurrency " n"
+Maximum concurrent service probes (default \fB50\fR).
 .TP
 .BI \-\-rate " n"
-Cap outbound HTTP requests to n per second across the scan.
+Cap outbound requests to n per second across the scan.
 .TP
 .BI \-\-per\-host\-concurrency " n"
 Limit concurrent probes against a single host.
@@ -135,11 +189,10 @@ Sleep a random time up to this before each service probe.
 Retry transient network failures n times with backoff.
 .TP
 .BI \-\-request\-budget " n"
-Cap deep-mode probes per service. Core identification probes always run;
-optional application-discovery probes stop once the budget is spent (0 = no
-cap). Deep probing is adaptive: an application's endpoints are only requested
-after the base responses show evidence of that application, and a host
-returning 429/503 skips the optional probes.
+Cap the optional deep-mode probes per service (status endpoints, the CRLF
+check, the alias checks); they stop once the budget is spent (0 = no cap). A
+host returning 429/503 skips the optional probes altogether.
+.SS Request shaping
 .TP
 .BI \-\-header " 'Name: value'"
 Add a request header (repeatable).
@@ -156,8 +209,12 @@ HTTP Basic authentication.
 .BI \-\-vhost " host"
 Override the Host header (virtual-host scanning).
 .TP
+.BI \-\-user\-agent " string"
+Override the HTTP User-Agent header.
+.TP
 .BI \-\-proxy " url"
-Route requests through an http(s):// or socks5:// proxy.
+Route requests through an http(s):// or socks5:// proxy. The raw-request and
+HTTP/2 fingerprint probes need a direct connection and are skipped.
 .TP
 .BI \-\-resolve " host:port:addr"
 Pin
@@ -172,10 +229,15 @@ Override the TLS SNI server name, independent of the Host header. A name that
 does not match the presented certificate fails verification unless
 .B \-\-insecure
 is set.
+.SS Data
 .TP
-.BI \-\-favicon\-catalog " file|url"
-Load a favicon-hash → product catalogue (JSON) to attribute matched site
-favicons. Repeatable.
+.BI \-\-vuln\-feed " file|url"
+Merge an external vulnerability feed (repeatable). The native
+\fBqnginxscanner-vuln-feed/1\fR schema, OSV records (single or array) and CSAF
+2.0 advisories are auto-detected; from OSV and CSAF only nginx packages are
+kept. Entries are added to the built-in catalogue; a native feed may also
+replace the set of supported branches and their latest releases. Not applied
+to scans started from the web GUI.
 .TP
 .BI \-\-signature\-pack " file|url"
 Load a versioned detection-signature pack (JSON, schema
@@ -184,77 +246,36 @@ response-body matchers to the built-in catalogues. Regular expressions are
 length-bounded and validated; weights are clamped. The active packs are
 recorded in the scan's provenance metadata. Repeatable, and honoured by the
 web GUI when passed at start-up.
-.TP
-.BI \-\-composer\-file " file"
-Supply a local
-.IR composer.json ", " composer.lock " or " installed.json
-(sniffed by content) to build the dependency inventory for a project whose
-Composer files are not web-exposed. Repeatable.
-.TP
-.BI \-\-allow " pattern"
-Keep only targets whose host matches \fIpattern\fR (an exact host/IP, a CIDR
-block, or a \fB*.domain\fR / \fB.domain\fR suffix). Repeatable.
-.TP
-.BI \-\-block " pattern"
-Drop targets whose host matches \fIpattern\fR (same forms as \fB\-\-allow\fR).
-Repeatable; applied after the allow list.
-.TP
-.BI \-\-vuln\-feed " file|url"
-Merge an external vulnerability feed (repeatable). The native
-qnginxscanner-vuln-feed schema, OSV records (single or array) and CSAF 2.0
-advisories are auto-detected.
-.TP
-.BI \-\-fail\-on " level"
-Exit with status 2 if a finding meets \fIlevel\fR: low, medium, high,
-critical or eol.
-.TP
-.BI \-\-oA " base"
-Write json/xml/csv/sarif/txt outputs and an HTML report to \fIbase\fR.*
-.TP
-.BI \-\-diff " file"
-Compare against a prior JSON scan result and print the differences.
-.TP
-.BI \-\-diff\-format " text|json"
-Format for \fB\-\-diff\fR output (default text).
-.TP
-.BI \-\-record\-corpus " file"
-Record a sanitised fixture of the scan's detection inputs (the responses fed
-to analysis) to \fIfile\fR for offline replay. Session-cookie values and
-credential headers are redacted; response bodies are kept verbatim as the
-fingerprinting material, so review a corpus before sharing it.
-.TP
-.BI \-\-replay\-corpus " file"
-Replay a corpus recorded with \fB\-\-record\-corpus\fR back through detection
-offline — no network and no targets — emitting a scan result exactly as a live
-run would. A regression harness: it reproduces the PHP verdict, version,
-evidence and vulnerability leads from stored responses. Honours
-\fB\-\-vuln\-feed\fR, \fB\-\-signature\-pack\fR, \fB\-\-format\fR,
-\fB\-\-report\fR and \fB\-\-fail\-on\fR.
+.SS Audit, resume and replay
 .TP
 .BI \-\-resume " file"
 Checkpoint completed services to \fIfile\fR and resume from it.
 .TP
 .BI \-\-pcap " file"
 Write a libpcap capture of every HTTP exchange to \fIfile\fR, reconstructing
-each request/response as a TCP conversation for a full audit trail. The file
-opens in Wireshark, tcpdump or tshark.
+each request/response as a TCP conversation for an audit trail. The file opens
+in Wireshark, tcpdump or tshark.
 .TP
 .BI \-\-log " file"
 Write a human-readable session log to \fIfile\fR recording each request and,
 per service, how every piece of evidence and each verdict was decided.
 .TP
-.BI \-\-web\-auth " user:pass"
-Protect the web GUI with HTTP Basic authentication.
+.BI \-\-record\-corpus " file"
+Record a sanitised fixture of the scan's detection inputs (the responses fed
+to analysis) to \fIfile\fR for offline replay. Cookie values and credential
+headers are redacted; response bodies are kept verbatim, so review a corpus
+before sharing it.
+.TP
+.BI \-\-replay\-corpus " file"
+Replay a corpus recorded with \fB\-\-record\-corpus\fR back through detection
+offline, with no network and no targets, emitting a scan result as a live run
+would. Honours \fB\-\-vuln\-feed\fR, \fB\-\-signature\-pack\fR,
+\fB\-\-format\fR, \fB\-\-report\fR, \fB\-\-diff\fR and \fB\-\-fail\-on\fR.
+.SS General
 .TP
 .BI \-\-config " file"
 Load settings from a YAML configuration file. Explicit flags override config
 values; positional targets override the config's target list.
-.TP
-.BI \-\-user\-agent " string"
-Override the HTTP User-Agent header.
-.TP
-.BI \-\-max\-hosts " n"
-Maximum hosts a single target spec may expand to.
 .TP
 .B \-\-web
 Run the web GUI instead of a one-shot scan.
@@ -262,33 +283,93 @@ Run the web GUI instead of a one-shot scan.
 .BI \-\-listen " host:port"
 Address for the web GUI (default \fB127.0.0.1:8088\fR).
 .TP
-.B \-\-version
-Print version information and exit.
+.BI \-\-web\-auth " user:pass"
+Protect the web GUI with HTTP Basic authentication.
 .TP
 .BI \-\-completion " shell"
 Print a shell completion script for \fIshell\fR (bash, zsh or fish) and exit.
-.SH OUTPUT
-The scan output (\fB\-\-format\fR) is a machine-readable record of every probed
-service in text, JSON or XML. A report (\fB\-\-report\fR) is a human-readable
-write-up in text, RTF or PDF. Both may be produced in a single run.
+.TP
+.B \-\-version
+Print version information and exit.
+.SH PROBES
+Every probe is read-only.
+.PP
+In both modes, each open port receives: a GET of the target path; a GET of
+.IR /qnginxscanner_probe_404 ,
+a guaranteed-missing path that yields the server's own error page; a raw
+HTTP/1.1 request without a Host header; on TLS services, a cleartext HTTP
+request to the TLS port; and the security.txt lookups.
+.PP
+Deep mode adds: an OPTIONS request; a raw request with an unknown method and
+one with a 9000-byte URI; the HTTP/2 connection preface (the server's SETTINGS
+and WINDOW_UPDATE frames are read, no request is made); GETs of
+.IR /nginx_status ", " /stub_status ", " /basic_status ", " /nginx\-status ", "
+.IR /status ", " /server\-status ", " /api/ " and " /status/format/json ;
+a CRLF header-injection check whose path contains an encoded CR LF and a marker
+header; and the alias off-by-slash check, which re-requests up to three static
+assets the page already links to through
+.IR /seg../seg/file .
+.PP
+.B \-\-no\-raw
+removes the raw requests and the HTTP/2 preface. They are also skipped when
+.B \-\-proxy
+is set.
+.SH FINDINGS
+Deep mode reports these behaviour-based findings:
+.BR alias\-traversal " (high),"
+.BR crlf\-injection " (medium),"
+.BR plus\-api\-exposed " (medium),"
+.BR stub\-status\-exposed " (low),"
+.BR vts\-status\-exposed " (low),"
+.BR autoindex\-enabled " (low),"
+.BR version\-disclosure " (info)."
+.SH NGINX2ROOT
+NGINX2Root (Xint, November 2026, https://nginx2root.com/) comprises
+CVE-2026-123007 (HTTP/2 flow-control memory corruption, nginx 1.9.5 to 1.31.8),
+CVE-2026-123633 (HTTP/2 use-after-free, 1.19.7 to 1.31.8),
+CVE-2026-121810 (HTTP/3 use-after-free, 1.25.0 to 1.31.8),
+CVE-2026-123634 (resolver use-after-free, 0.6.18 to 1.31.8) and
+CVE-2026-113425 (mail proxy use-after-free, 0.5.33 to 1.31.8).
+All are fixed in nginx 1.31.9 (mainline) and 1.30.7 (stable).
+.PP
+In deep mode each nginx service is given one of three statuses:
+.B vulnerable\-version
+(the detected version is in an affected range),
+.B not\-affected
+(the detected version carries the fixes), or
+.B unknown\-version
+(the version is hidden, or the product uses its own version numbering).
+The result also states whether HTTP/2, HTTP/3 and the mail proxy were observed
+on that endpoint.
+.PP
+This is version-based detection. The tool does not attempt to trigger the
+bugs, a hidden version cannot be assessed, and distribution packages may carry
+backported fixes under an unchanged version number. NGINX Plus users should
+consult F5 article K000164058.
 .SH EXIT STATUS
 .TP
 .B 0
 The scan completed.
 .TP
 .B 1
-A fatal error occurred (invalid target or port spec, unreadable config/feed, or
-an I/O error).
+A fatal error occurred (invalid target or port spec, unreadable config, feed
+or signature pack, or an I/O error).
 .TP
 .B 2
 The scan completed but a \fB\-\-fail\-on\fR gate matched.
 .SH EXAMPLES
 .TP
-Is this service PHP?
+Is this service nginx?
 .B qnginxscanner example.com
 .TP
 Deep scan with a PDF report:
 .B qnginxscanner \-\-mode deep \-\-report\-out report.pdf example.com
+.TP
+Fail a pipeline when any host runs an NGINX2Root-affected version:
+.B qnginxscanner \-\-mode deep \-\-fail\-on nginx2root \-\-targets\-file hosts.txt
+.TP
+Look for the mail proxy as well as web services:
+.B qnginxscanner \-\-mode deep \-\-banners \-\-ports 25,110,143,80,443 mail.example.com
 .TP
 Subnet sweep, HTTPS only, JSON to a file:
 .B qnginxscanner \-\-tls on \-\-format json \-\-out scan.json 10.0.0.0/28
@@ -305,12 +386,25 @@ Launch the web GUI:
 .TP
 .I config.example.yaml
 Annotated example configuration shipped with the source.
+.TP
+.I docs/vuln\-feed.example.json
+Example vulnerability feed in the native schema.
+.TP
+.I docs/signature\-pack.example.json
+Example detection-signature pack.
 .SH SEE ALSO
 Full documentation in
 .IR docs/USAGE.md " and " docs/DESIGN.md .
+The nginx security advisories: https://nginx.org/en/security_advisories.html
 .SH CAVEATS
-Vulnerability findings are leads correlated from the detected version only, not
-confirmed by exploitation; many require a specific SAPI or configuration.
-Always verify against the live service before acting.
+Vulnerability results are leads correlated from the detected version only, not
+confirmed by exploitation; many require a specific protocol, module or
+directive, which is reported as observed, contradicted or unknown. A server
+that hides its version receives no leads. Tengine, Angie, freenginx, Kong and
+Apache APISIX are detected but not correlated against nginx advisories. Always
+verify against the live configuration before acting.
+.SH LICENSE
+GNU General Public License version 3. qnginxscanner is derived from
+qphpscanner by the same author.
 .SH AUTHORS
 qnginxscanner authors.

@@ -287,7 +287,7 @@ version:
 | `plus-api-exposed` | medium | the NGINX Plus REST API answers unauthenticated requests |
 | `stub-status-exposed` | low | a `stub_status` page is publicly readable |
 | `vts-status-exposed` | low | nginx-module-vts status JSON is publicly readable |
-| `autoindex-enabled` | low | the scanned page is an nginx directory listing |
+| `autoindex-enabled` | low | a response collected by the scan is an nginx directory listing |
 | `version-disclosure` | info | the server announces its version |
 
 Each finding has a detail text, the URL it was observed at and a remediation
@@ -420,6 +420,10 @@ For plain nginx with a known version, deep mode reports:
 `--fail-on eol` exits 2 when any service is end-of-life. A vulnerability feed
 can replace the supported set and the latest releases (see below). The
 lifecycle is evaluated for plain nginx only, not for derivatives.
+
+Without the lifecycle data — in detect mode, and for OpenResty or NGINX Plus —
+`branch` only reflects nginx's numbering rule (an even minor is a stable
+branch, an odd minor is mainline) and says nothing about support.
 
 ## Mail proxy
 

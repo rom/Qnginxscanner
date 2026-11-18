@@ -17,7 +17,7 @@ import (
 const DefaultMaxBodyBytes int64 = 512 * 1024
 
 // DefaultUserAgent identifies the scanner honestly in request logs.
-const DefaultUserAgent = "qnginxscanner/0.1 (+https://github.com/rom/qnginxscanner)"
+const DefaultUserAgent = "qnginxscanner/1.0 (+https://github.com/rom/qnginxscanner)"
 
 // TLSInfo summarises the negotiated TLS parameters of a connection.
 type TLSInfo struct {

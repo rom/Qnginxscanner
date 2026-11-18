@@ -86,7 +86,7 @@ type Options struct {
 	Retries int
 	// RequestBudget caps the number of deep-mode probes issued per service
 	// (0 = no cap). Core identification probes always run; optional
-	// app-discovery probes stop once the budget is spent.
+	// status and misconfiguration probes stop once the budget is spent.
 	RequestBudget int
 
 	// --- Enrichment ---

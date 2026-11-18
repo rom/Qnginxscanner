@@ -4,206 +4,91 @@ All notable changes to **qnginxscanner** are documented here. The format is base
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.0.0] - 2026-11-18
+
+Initial release. qnginxscanner is derived from
+[qphpscanner](https://github.com/rom/qphpscanner) by the same author: the
+scanning framework is inherited, and the detection engine, probes and
+vulnerability catalogue are new and specific to nginx. The history of
+qphpscanner is not repeated here.
 
 ### Added
 
-- **Offline record & replay (regression harness):** `--record-corpus FILE`
-  saves a sanitised fixture of a scan's detection inputs — the exact responses
-  fed to analysis — and `--replay-corpus FILE` runs that corpus back through the
-  detection pipeline with no network and no targets, reproducing the PHP
-  verdict, version, evidence and vulnerability leads. This turns a real scan
-  into a repeatable test case (e.g. to confirm a detection change behaves the
-  same, or to diff two code versions against one captured corpus). The corpus is
-  sanitised on capture: session-cookie values and credential headers are
-  redacted while the cookie names and attributes detection relies on are kept;
-  response bodies (the fingerprinting material) are stored verbatim, so a corpus
-  should still be reviewed before sharing. Bodies round-trip byte-exact
-  (base64), so the favicon hash and other binary signals replay faithfully.
-- **Versioned signature packs:** the built-in detection catalogues can be
-  extended at run time with an external **signature pack** — a JSON document
-  (schema `qnginxscanner-signature-pack/1`) adding response-header, cookie-name
-  and response-body (Go/RE2) matchers that behave exactly like the shipped
-  signatures. Loaded with `--signature-pack FILE|URL` (repeatable, config key
-  `signature_packs`, and honoured by the `--web` GUI at start-up). Packs are
-  bounded and validated on load — unknown schema, missing `id`, an unparseable
-  or over-length regex, an unknown cookie match kind, or too many entries
-  rejects the whole pack; weights are clamped to 0–100. The active packs
-  (`id@version`) are stamped into the scan's provenance metadata, so a diff can
-  attribute a detection change to a loaded pack rather than the target. See
-  [`docs/signature-pack.example.json`](signature-pack.example.json).
-- **Adaptive deep-mode discovery:** deep probing is now evidence-driven — after
-  the base/core responses, an application's endpoints (WordPress, Joomla,
-  Drupal, Laravel/Symfony, Magento) are requested only once that application is
-  indicated, and generic PHP discovery is skipped against a clearly non-PHP
-  runtime. A per-service request budget (`--request-budget`, config
-  `request_budget`, web field) caps optional probes, and a host returning
-  429/503 skips them entirely (back-off). When discovery is cut short the result
-  records why (`discovery_limited`: `budget` / `rate-limited`). Full
-  CLI / YAML / web parity.
+- **nginx detection** for nginx and its derivatives (OpenResty, Tengine, Angie,
+  freenginx, NGINX Plus, Kong, Apache APISIX) from additive, weighted signals
+  with verdict bands `confirmed` (≥ 70), `likely` (≥ 50) and `possible` (≥ 25):
+  - the `Server` banner, including customised banners that keep an nginx token;
+  - the built-in error-page template (exact byte structure; product, version
+    and packaging hint from the footer);
+  - default welcome, `50x.html` and autoindex pages;
+  - nginx-specific messages: "The plain HTTP request was sent to HTTPS port"
+    and the 494/495/496 pages;
+  - the static-file `ETag` format `hex(mtime)-hex(size)`, verified against
+    `Last-Modified` and `Content-Length`;
+  - the wire order of response headers and nginx-only reason phrases
+    (`405 Not Allowed`, `408 Request Time-out`, `414 Request-URI Too Large`,
+    `504 Gateway Time-out`);
+  - the HTTP/2 `SETTINGS` + `WINDOW_UPDATE` fingerprint
+    `3:128;4:65536;5:16777215|2147418112`;
+  - exposed `stub_status`, NGINX Plus API and nginx-module-vts endpoints;
+  - `X-Accel-*`, cache-status, ngx_pagespeed, Kong and APISIX headers, and the
+    ingress-nginx `INGRESSCOOKIE`;
+  - the mail proxy's default POP3/IMAP/SMTP greetings (with `--banners`).
+- **Raw probes**: hand-built HTTP/1.x requests whose replies are kept verbatim
+  (`no-host`, `plain-on-tls`, and in deep mode `unknown-method` and
+  `long-uri`), plus an HTTP/2 connection-preface fingerprint. `--no-raw`
+  (config `no_raw`) restricts a scan to well-formed HTTP requests; raw probes
+  are skipped automatically behind `--proxy`.
+- **Deep-mode fingerprinting**: product and nginx core version (OpenResty is
+  mapped to its bundled core), version observations with conflict detection,
+  packaging hint, protocols (`http/1.1`, `h2`, `h2c`, advertised `h3`, mail)
+  and observed modules.
+- **Behaviour-based findings**: `stub-status-exposed`, `plus-api-exposed`,
+  `vts-status-exposed`, `version-disclosure`, `autoindex-enabled`,
+  `alias-traversal` (off-by-slash `alias`, proven by re-reading an
+  already-public asset) and `crlf-injection`, each with a remediation hint.
+- **Vulnerability catalogue** mirroring the nginx.org security advisories (77
+  entries, 2009–2026) with the vendor's vulnerable ranges and per-branch fixed
+  releases, so stable-branch backports are honoured. Each lead is qualified by
+  prerequisites (HTTP/2, HTTP/3, mail proxy, Windows, modules,
+  configuration-only conditions) resolved as observed / contradicted /
+  unknown. Distribution packages are flagged as possibly carrying backported
+  fixes rather than hidden.
+- **NGINX2Root assessment** (CVE-2026-123007, CVE-2026-123633,
+  CVE-2026-121810, CVE-2026-123634, CVE-2026-113425; fixed in nginx 1.31.9 and
+  1.30.7): a per-service status `vulnerable-version`, `not-affected` or
+  `unknown-version`, with the HTTP/2, HTTP/3 and mail observations for that
+  endpoint; summary counters `nginx2root` and `nginx2root_unknown`; a CSV
+  column and a SARIF rule; and the gate `--fail-on nginx2root`. The assessment
+  is version-based: the tool does not attempt to trigger the bugs.
+- **Release lifecycle**: branches other than the current mainline (1.31) and
+  stable (1.30) are reported end-of-life (`legacy`); a supported branch behind
+  its latest release is reported `outdated`. `--fail-on eol` gates on it.
+- **Vulnerability feeds** (`--vuln-feed`): the native
+  `qnginxscanner-vuln-feed/1` schema (`nginx`, `supported`, `latest`), OSV and
+  CSAF 2.0; only nginx packages are imported from the latter two.
+- **Signature packs** (`--signature-pack`, schema
+  `qnginxscanner-signature-pack/1`) with header, cookie and body matchers that
+  can name a `variant` and a `module`.
+- Inherited from qphpscanner and adapted: flexible target and port specs,
+  Certificate Transparency subdomain enumeration, TLS handling, politeness
+  controls (rate, concurrency levels, jitter, retries, request budget), request
+  shaping (headers, auth, vhost, proxy, `--resolve`, `--sni`), allow/block
+  lists, web-server and reverse-proxy/CDN/WAF identification, `security.txt`
+  parsing, output formats (text, JSON, XML, CSV, SARIF, NDJSON), reports
+  (text, RTF, PDF, HTML), coverage-aware scan diffing with provenance notes,
+  resume checkpoints, the PCAP and session-log audit trail, offline corpus
+  record and replay, YAML configuration, shell completions and the web GUI.
 
-- **Composer dependency inventory & package advisories:** when a
-  `composer.json` / `composer.lock` / `vendor/composer/installed.json` is
-  web-exposed (or supplied with `--composer-file`, config `composer_files`, or
-  the web uploader), qnginxscanner parses a dependency inventory — classifying
-  each package as *required* / *required-dev* / *locked* / *installed* — and
-  correlates concrete package versions against advisory leads (built-in, plus a
-  `packages:` map in external `--vuln-feed` data). The Composer `php` platform
-  constraint is kept separate from the detected runtime version. Shown in
-  output, reports and the web result card; bounded and back-compatible.
+### Removed (relative to qphpscanner)
 
-- **Version-uncertainty model & vulnerability prerequisites:** detection now
-  keeps every version observation with its source (header, phpinfo, Apache
-  signature, …) and flags a **version conflict** when sources disagree at the
-  major.minor level (possible multiple backends, a cache, or two apps).
-  Distro/backport suffixes (e.g. `7.4.33-1+deb11u3`) are preserved verbatim.
-  Vulnerability leads can now carry structured **prerequisites** (required
-  SAPI / OS / extension / ini directive) resolved against the scan's own
-  evidence to *observed*, *contradicted*, or *unknown* — a contradicted
-  precondition marks a lead "likely N/A here" (e.g. CVE-2024-4577 on a
-  non-`php-cgi` SAPI; the php2shell CVEs when `session.upload_progress.enabled`
-  is Off) without dropping it. Shown in output, reports and the web card.
+- All detection logic, probes and catalogue data specific to qphpscanner's
+  target technology, together with the command-line flags and configuration
+  keys that only served them (the icon-hash catalogue and the dependency-file
+  inventory).
 
-- Web GUI: the **Failures** tab has a sort control — scan order, or grouped
-  **by failure type** (i/o timeouts first, then other errors).
-- **Coverage-aware scan diffing:** a comparison now distinguishes a finding
-  that genuinely went away (the endpoint was reassessed) from one that could
-  not be re-checked — a timeout, WAF challenge, auth requirement, or a
-  host/port the newer scan never covered is reported as *not reassessed*, and
-  absent findings there are no longer claimed as *resolved*. Diffs also carry
-  *provenance notes* flagging when the two scans ran under different settings
-  (mode, ports, TLS, timeout, auth, connection pinning, catalogue size), to
-  separate scanner/config changes from real website changes. Scans saved before
-  this (no provenance metadata) still diff cleanly. Surfaced in JSON, the CLI
-  `--diff`, and the web Compare / Origin-check views.
-- **Connection pinning + origin comparison:** `--resolve HOST:PORT:ADDR`
-  (curl-style) dials a specific address while keeping the URL host for the Host
-  header and TLS SNI, and `--sni NAME` overrides the TLS SNI independently — so
-  an origin behind a CDN can be reached directly. The web GUI exposes these as
-  "Connection overrides" and adds an **Origin check** (edge-vs-origin diff) to
-  the Compare tab. Full CLI / YAML / web parity.
-- **Structured `phpinfo()` metadata:** when a phpinfo() page is exposed, the
-  observed Server API (e.g. "FPM/FastCGI"), thread-safety, architecture, build
-  date, loaded/additional `.ini` paths, security-relevant directive values
-  (local/master) and notable extension versions (e.g. Xdebug) are extracted and
-  shown — kept separate from the header-inferred guesses, with risky directives
-  surfaced as observations and credential-shaped values redacted.
-- Web GUI shows the build version in the page footer (`/api/version`).
-- Statistics: a **PHP services by port** breakdown (e.g. http/80 vs https/443).
-- Statistics: a **web-server distribution** chart (Apache vs nginx vs …).
-- Results list sort order **"Most critical vulnerabilities first"**, bringing
-  services with the highest-severity vulnerability leads to the top.
-- Richer **nginx metadata**: OpenResty (LuaJIT) and Tengine flavours, the
-  `stub_status` module with its live connection counters, `X-Accel`
-  internal-redirect/offload support, and a version recovered from a status or
-  error page when `server_tokens off` hides the `Server` header.
-- Additional version-correlated vulnerability leads: PHP core
-  (CVE-2022-37454, CVE-2024-8929, CVE-2025-1217, CVE-2025-1219) and CMS cores
-  (WordPress CVE-2022-21663/21664, Joomla CVE-2017-8917).
-- Progress bar now shows when the scan **started**, how long it has been
-  **running**, and when it **ended**.
-- Each result card shows **when it was scanned** (`checked_at`).
-- `make release` cross-compiles binaries for linux/darwin/windows
-  (amd64+arm64) into `dist/` as `.tar.gz`/`.zip` archives with a `SHA256SUMS`.
+### Changed (relative to qphpscanner)
 
-### Changed
-
-- Web GUI renders streamed results incrementally with a per-bucket cap, so very
-  large scans (thousands of ports) no longer hang the browser.
-
-### Fixed
-
-- **Security:** configured cookies and Basic/Bearer credentials are no longer
-  re-sent when a redirect leads to a different host — they are scoped to the
-  original target host.
-- **Detection accuracy:** soft-404 / catch-all servers can no longer reach a
-  PHP verdict from URL-only (`/phpmyadmin/`) or behavioural (PATH_INFO) signals
-  alone; those are now gated against a guaranteed-missing-URL baseline and
-  require content that is distinguishable from it.
-- Resolve-DNS now streams each host's resolved names before its services, so an
-  IP target shows its reverse (PTR) hostname while the scan runs, not only after
-  it completes.
-
-## [1.0.0] - 2026-10-21
-
-First stable release. qnginxscanner detects whether network services are backed
-by PHP, collects the evidence behind each verdict, fingerprints the stack and
-correlates known version-based vulnerabilities — as a CLI and a web GUI. All
-probing is passive, read-only fingerprinting; vulnerability results are
-informational, version-correlated leads, not confirmed findings. The entire
-tool builds from the Go standard library, with no external dependencies.
-
-### Detection & classification
-
-- PHP detection from headers, cookies, response bodies, URL extensions and
-  behavioural probes, with a weighted confidence score and verdict tiers
-  (confirmed / likely / possible / none).
-- Evidence carries full provenance: where it was found, how it matched, the
-  literal matcher, the matched snippet (with body line number), the exact
-  probe (method + URL) and its HTTP response code; each item has a
-  low/medium/high confidence tier.
-- Variant detection (PHP, HHVM, Zend Server) and best-effort SAPI inference
-  (mod_php, PHP-FPM, LiteSpeed LSAPI, php-cgi, FrankenPHP/RoadRunner/Swoole).
-- PHP version from `X-Powered-By`/`Server` banners, exposed `phpinfo()`,
-  Apache server signatures, the `expose_php` easter-egg GUIDs, and more.
-- Extension/module fingerprinting from `phpinfo()`, loader tokens, `Server`
-  modules and exposed OPcache/APCu/PHP-FPM status pages.
-- Shodan-style **mmh3 favicon hash** with an extensible product catalogue
-  (`--favicon-catalog`).
-- Broad application/CMS/addon detection (WordPress, Joomla, Drupal, Magento,
-  TYPO3, Laravel, Symfony, Yii, CakePHP, CodeIgniter, Phalcon, phpBB, MediaWiki,
-  Moodle, Nextcloud/ownCloud, phpMyAdmin, Adminer, Matomo, Zabbix, GLPI,
-  and many more), with core-version extraction for several, and runtime-quirk /
-  error-message signatures.
-- Non-PHP products are recognised without inflating the PHP score
-  (OpenCloud/oCIS, ONLYOFFICE, cPanel, Plesk, LiteSpeed).
-- Reverse-proxy / CDN / WAF / load-balancer detection ("origin reply
-  concealed"), web-server identification, and HTTP/2 + ALPN (and `h2c`)
-  awareness.
-- RFC 9116 `security.txt` discovery and parsing.
-
-### Vulnerabilities
-
-- Curated, version-correlated catalogue of PHP-core and famous CMS-core CVEs,
-  including the October 2026 **php2shell** RCEs (CVE-2026-109618 /
-  CVE-2026-109619) and end-of-life branch flagging.
-- External feeds via `--vuln-feed` in the native schema **or standard OSV and
-  CSAF 2.0** documents (auto-detected).
-- `--fail-on` severity gating for CI.
-
-### Targets, probing & politeness
-
-- Targets: URL, IPv4/IPv6, CIDR, dashed ranges, per-octet and IPv6 wildcards,
-  DNS wildcards (`*.domain`, via Certificate Transparency), and target lists
-  from a file or stdin.
-- Allow/block lists (`--allow` / `--block`; host, CIDR, `*.domain`).
-- TLS modes (auto/on/off), detect vs deep depth, DNS enrichment and banner
-  grabbing.
-- Request shaping: custom headers, Basic/Bearer/cookie auth, vhost, and
-  http(s)/SOCKS5 proxy (dependency-free SOCKS5 client).
-- Politeness: global rate limiting, per-host and host-level concurrency,
-  jitter, and retries with backoff.
-- Resume via a checkpoint file.
-
-### Output, reporting & audit
-
-- Machine output: text, JSON, XML, CSV, SARIF, NDJSON (`--oA` writes them all).
-- Reports: text, RTF, PDF, HTML (all written by hand, no dependencies).
-- Scan diffing (`--diff`).
-- Audit trail: a libpcap capture of every HTTP exchange (`--pcap`) and a
-  human-readable session log explaining each decision (`--log`).
-
-### Interfaces
-
-- YAML configuration file with **full CLI parity**.
-- Shell completions for bash, zsh and fish (`--completion`).
-- Web GUI: live-streaming results that survive errors/timeouts/cancellation;
-  Results / PHP / Failures sub-tabs with clickable summary-tile filters and a
-  scan-order / PHP-first sort; Compare (diff two retained scans or a saved
-  JSON/XML file); Statistics with pie and bar charts; an Info findings-explorer
-  of clickable framework/addon/vulnerability tags; collapsible history with
-  per-scan downloads; bulk target loading from a file; optional HTTP Basic auth;
-  and mouse-over help throughout.
-
-[Unreleased]: https://github.com/rom/Qphpscanner/compare/v1.0.0...HEAD
-[1.0.0]: https://github.com/rom/Qphpscanner/releases/tag/v1.0.0
+- Licence: GPL-3.0 (qphpscanner is MIT).
+- The JSON/XML result carries an `nginx` object per service and nginx-specific
+  summary counters; results are not interchangeable with qphpscanner's.
