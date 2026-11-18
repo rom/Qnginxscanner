@@ -1,0 +1,66 @@
+{
+  "schema": "qnginxscanner-vuln-feed/1",
+  "generated": "2026-11-18",
+
+  "_comment": "Example external vulnerability feed for qnginxscanner. Load with --vuln-feed <file-or-url> (repeatable) or list it under vuln_feeds: in the config file. Entries under 'nginx' are APPENDED to the built-in catalogue (the nginx.org advisory list). The IDs below are fake and every range sits on a fictional 99.x release line, so loading this file never changes the result of a real scan. Matching rules: a version matches an entry when ANY 'affected' range matches, unless it is on the same major.minor as a 'fixed_in' release and at or above it (that is how a stable-branch backport is expressed). Within one range every populated bound must hold: 'branch' pins a major.minor; 'introduced' is an inclusive lower bound; 'last' is an inclusive upper bound; 'fixed' and 'lt' are exclusive upper bounds; 'eq' matches one exact version. 'prereqs' qualify a lead against what the scan observed: kind 'protocol' (want: http2 | http3 | mail), 'os' (want: windows), 'module' (want: a module name such as http_dav) or 'config' (cannot be observed remotely; shown as context). Two further optional top-level keys exist: 'supported' maps each maintained branch to 'mainline' or 'stable' and REPLACES the built-in set when present (built-in: {\"1.31\": \"mainline\", \"1.30\": \"stable\"}); 'latest' maps a branch to its newest release and overrides per branch.",
+
+  "nginx": [
+    {
+      "id": "EXAMPLE-2026-0001",
+      "severity": "high",
+      "title": "Example: memory corruption in HTTP/2 request handling",
+      "description": "A longer description of the issue, shown in JSON/XML output and reports.",
+      "reference": "https://example.org/advisories/EXAMPLE-2026-0001",
+      "note": "example entry, fictional 99.x release line",
+      "affected": [
+        { "introduced": "99.1.0", "last": "99.3.4" }
+      ],
+      "fixed_in": ["99.3.5", "99.2.9"],
+      "tags": ["example"],
+      "prereqs": [
+        { "kind": "protocol", "want": "http2" },
+        { "kind": "config", "detail": "requires requests to be proxied to an upstream" }
+      ]
+    },
+    {
+      "id": "EXAMPLE-2026-0002",
+      "severity": "medium",
+      "title": "Example: buffer overread in the WebDAV module",
+      "reference": "https://example.org/advisories/EXAMPLE-2026-0002",
+      "affected": [
+        { "branch": "99.2", "lt": "99.2.7" },
+        { "introduced": "99.3.0", "fixed": "99.3.2" }
+      ],
+      "prereqs": [
+        { "kind": "module", "want": "http_dav", "detail": "requires the WebDAV module (dav_methods)" }
+      ]
+    },
+    {
+      "id": "EXAMPLE-2026-0003",
+      "severity": "low",
+      "title": "Example: issue limited to one release on Windows",
+      "affected": [
+        { "eq": "99.3.3" }
+      ],
+      "prereqs": [
+        { "kind": "os", "want": "windows" }
+      ]
+    },
+    {
+      "id": "EXAMPLE-2026-0004",
+      "severity": "medium",
+      "title": "Example: injection in the mail proxy",
+      "affected": [
+        { "introduced": "99.0.1", "fixed": "99.1.0" }
+      ],
+      "prereqs": [
+        { "kind": "protocol", "want": "mail" }
+      ]
+    }
+  ],
+
+  "latest": {
+    "99.3": "99.3.5",
+    "99.2": "99.2.9"
+  }
+}

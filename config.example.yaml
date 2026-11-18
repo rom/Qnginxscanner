@@ -1,0 +1,178 @@
+# qnginxscanner example configuration
+#
+# Pass with:  qnginxscanner --config config.example.yaml
+#
+# Any value here is overridden by an explicitly-set command-line flag, and
+# positional CLI targets override the `targets` list below.
+#
+# The parser supports a small YAML subset: comments, nested maps with
+# space indentation (no tabs), scalar key/value pairs and block lists of
+# scalars. Quote values that contain special characters. Flow syntax such as
+# `[]` or `{}` is NOT supported: leave a list key without a value (or comment
+# it out) to keep it empty.
+
+# Targets to scan. Each may be a URL, hostname, IPv4/IPv6 literal, CIDR block,
+# dashed range (1.2.3.4-9 or 1.2.3.4-1.2.3.9), per-octet wildcard (1.2.3.*)
+# or DNS wildcard ("*.example.com", enumerated via certificate transparency).
+targets:
+  - https://example.com
+  - 10.0.0.0/28
+  - 192.168.1.1-20
+
+# Ports to check. Single, comma-separated and ranges may be mixed.
+# Leave empty to use the built-in common-web-port set
+# (80, 443, 8000, 8008, 8080, 8443, 8888, 3000, 5000, 9000).
+# Add 25,110,143 (with `banners: true`) to look for the nginx mail proxy.
+ports: "80,443,8080,8000-8010"
+
+# Scan depth:
+#   detect — only decide whether a service is nginx (or an nginx derivative)
+#   deep   — also fingerprint version, release branch, protocols and modules,
+#            check for misconfigurations (exposed status pages, alias
+#            traversal, CRLF header injection) and correlate known
+#            version-based vulnerabilities, including the NGINX2Root chain
+mode: detect
+
+# TLS handling: auto (infer from the port), on (force https) or off (force http).
+tls: auto
+
+# Per-connection timeout (Go duration: 10s, 500ms, 1m...).
+timeout: 10s
+
+# Maximum concurrent service probes.
+concurrency: 50
+
+# Follow HTTP redirects while gathering evidence.
+follow_redirects: true
+
+# Do not verify TLS certificates (useful for self-signed scan targets).
+insecure: false
+
+# Look up and parse /.well-known/security.txt (and the legacy /security.txt).
+security_txt: true
+
+# Include closed/filtered ports in the output (noisy for large ranges).
+include_closed: false
+
+# Maximum hosts a single target spec may expand to (0 = built-in default).
+max_hosts_per_spec: 65536
+
+# Override the HTTP User-Agent (empty = built-in default, which names the tool).
+user_agent: ""
+
+# Maximum response body bytes read for analysis (0 = built-in default, 512 KiB).
+max_body_bytes: 524288
+
+# Machine-readable scan output: format is text | json | xml | csv | sarif | ndjson.
+# Leave file empty to write to stdout.
+output:
+  format: text
+  file: ""
+
+# Human-readable report: format is text | rtf | pdf | html.
+# rtf, pdf and html require a file. Leave both empty to skip the report.
+report:
+  format: ""
+  file: ""
+
+# Web GUI. When enabled, qnginxscanner serves the browser UI instead of
+# running a one-shot scan. `auth` protects it with HTTP Basic auth (user:pass).
+web:
+  enabled: false
+  listen: "127.0.0.1:8088"
+  auth: ""
+
+# --- Politeness ---------------------------------------------------------------
+# Max outbound HTTP requests per second across the whole scan (0 = unlimited).
+rate: 0
+# Max concurrent service probes per host (0 = unlimited).
+per_host_concurrency: 0
+# Max distinct hosts scanned at once (0 = no host-level cap).
+host_concurrency: 0
+# Random delay of up to this before each service probe (Go duration).
+jitter: 0s
+# Extra attempts on a transient network error.
+retries: 0
+# Cap the optional deep-mode probes per service (status endpoints, the CRLF
+# check, alias checks); they stop once the budget is spent (0 = no cap).
+# A host answering 429/503 makes the optional probes back off entirely.
+request_budget: 0
+
+# --- Enrichment / probe selection ---------------------------------------------
+# Add forward and reverse DNS for each host.
+resolve_dns: false
+# Grab a short service banner from open non-HTTP ports. This is also how the
+# nginx mail proxy (POP3/IMAP/SMTP default greetings) is detected.
+banners: false
+# Skip the raw-request and HTTP/2-preface fingerprint probes, so that only
+# well-formed HTTP requests are sent (see "What is sent to targets" in
+# docs/USAGE.md). Costs some evidence: header order, reason phrases and the
+# HTTP/2 SETTINGS fingerprint are only visible to those probes.
+no_raw: false
+
+# --- HTTP request shaping -----------------------------------------------------
+# Extra request headers — either a list of "Name: value" strings or a map.
+headers:
+  - "X-Scan: qnginxscanner"
+# Cookie header value, Bearer token, or Basic auth (user:pass).
+cookie: ""
+bearer: ""
+basic: ""
+# Override the Host header (virtual-host scanning).
+vhost: ""
+# Route requests via an http(s):// or socks5:// proxy. Raw-request and HTTP/2
+# fingerprint probes need a direct connection and are skipped when set.
+proxy: ""
+# Pin host:port to a fixed dial address (curl --resolve style), keeping the URL
+# host for the Host header and TLS SNI — e.g. to reach an origin behind a CDN.
+resolve:
+  # - "example.com:443:203.0.113.10"
+# Override the TLS SNI server name, independent of the Host header.
+sni: ""
+
+# --- Data / resume / targets --------------------------------------------------
+# External vulnerability feeds (file or URL): the native
+# qnginxscanner-vuln-feed/1 schema, OSV records or CSAF 2.0 advisories. Entries
+# are added to the built-in nginx.org advisory catalogue; a feed may also
+# override the supported branches and their latest releases.
+# See docs/vuln-feed.example.json.
+vuln_feeds:
+  # - docs/vuln-feed.example.json
+# External detection-signature packs (file or URL): JSON documents of the
+# qnginxscanner-signature-pack/1 schema that add header/cookie/body matchers to
+# the built-in catalogues. Regexes are length-bounded and validated; weights
+# are clamped. Active packs are stamped into the scan's provenance metadata.
+# See docs/signature-pack.example.json.
+signature_packs:
+  # - docs/signature-pack.example.json
+# Allow/block lists override the target list. Each entry is an exact host/IP,
+# a CIDR block, or a "*.domain" / ".domain" suffix. When allow is non-empty,
+# only matching targets are scanned; block drops matching targets afterwards.
+allow:
+  # - 10.0.0.0/8
+block:
+  # - "*.internal.example.com"
+# Exit with status 2 when a gate matches:
+#   low|medium|high|critical — a vulnerability lead or finding at least that severe
+#   eol                      — an nginx service on an end-of-life branch
+#   nginx2root               — an nginx version affected by the NGINX2Root
+#                              advisories (needs mode: deep)
+fail_on: ""
+# Checkpoint file: record completed services and resume from it.
+resume: ""
+# Keep only enumerated subdomains that resolve in DNS.
+verify_subdomains: false
+# Disable "*.domain" subdomain enumeration.
+no_dns_enum: false
+# Read additional targets from a file, one per line ('-' for stdin).
+targets_file: ""
+
+# --- Audit trail --------------------------------------------------------------
+# Write a libpcap capture of every HTTP exchange (opens in Wireshark/tcpdump).
+pcap: ""
+# Write a human-readable session log explaining each detection decision.
+log: ""
+
+# Note: --format/--out/--report live under output:/report: above; --oA, --diff,
+# --record-corpus/--replay-corpus and --completion remain command-line-only
+# (see `qnginxscanner --help` and docs/USAGE.md).

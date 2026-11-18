@@ -1,0 +1,62 @@
+{
+  "schema": "qnginxscanner-signature-pack/1",
+  "id": "example-edge",
+  "version": "2026.11.1",
+
+  "_comment": "Example detection-signature pack for qnginxscanner. Load with --signature-pack <file-or-url> (repeatable) or list it under signature_packs: in the config file. Its matchers are merged into the built-in catalogues and behave exactly like the shipped signatures: a match adds an evidence item with the given weight to the nginx confidence score, 'variant' names the nginx-based product the match implies, and 'module' adds an entry to the service's modules/features list. Only use signals that really imply nginx or an nginx-based product: a pack matcher that fires on other servers produces false positives. 'AcmeEdge' and the names below are fictional. Everything is read-only fingerprinting of responses the scan collects anyway; a pack adds no requests. On load the pack is validated as a whole (schema, non-empty id, at most 500 entries per list, body regexes of at most 512 bytes that must compile as Go/RE2, cookie match 'exact' or 'prefix'); weights are clamped to 0-100. The id@version is recorded in the scan's meta.signature_packs.",
+
+  "headers": [
+    {
+      "header": "X-AcmeEdge-Node",
+      "variant": "AcmeEdge",
+      "weight": 55,
+      "detail": "AcmeEdge node header (AcmeEdge is a fictional nginx-based gateway); matches when the header is present at all"
+    },
+    {
+      "header": "Via",
+      "contains": "acmeedge/",
+      "variant": "AcmeEdge",
+      "weight": 50,
+      "detail": "Via names the AcmeEdge gateway (case-insensitive substring match)"
+    },
+    {
+      "header": "X-Acme-Cache-Status",
+      "module": "http_proxy cache",
+      "weight": 20,
+      "detail": "site-specific cache status header set from $upstream_cache_status"
+    }
+  ],
+
+  "cookies": [
+    {
+      "name": "ACMEEDGE_ROUTE",
+      "match": "exact",
+      "module": "acmeedge sticky routing",
+      "weight": 30,
+      "detail": "AcmeEdge session-affinity cookie (default name)"
+    },
+    {
+      "name": "acmeedge_lb_",
+      "match": "prefix",
+      "weight": 25,
+      "detail": "AcmeEdge load-balancer cookie (name prefix)"
+    }
+  ],
+
+  "bodies": [
+    {
+      "id": "body.welcome-acmeedge",
+      "regex": "(?i)<title>Welcome to AcmeEdge!</title>",
+      "variant": "AcmeEdge",
+      "weight": 60,
+      "detail": "AcmeEdge default welcome page"
+    },
+    {
+      "id": "body.acmeedge-error-footer",
+      "regex": "<hr><center>acmeedge(?:/\\d+(?:\\.\\d+){1,3})?</center>",
+      "variant": "AcmeEdge",
+      "weight": 55,
+      "detail": "AcmeEdge error page footer (nginx error-page layout with a rebranded footer)"
+    }
+  ]
+}
