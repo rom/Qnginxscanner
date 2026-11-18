@@ -26,22 +26,29 @@ anything** and never tries to trigger a memory-safety bug.
   `Last-Modified` and `Content-Length`; the wire order of response headers;
   nginx-only reason phrases (`405 Not Allowed`, `414 Request-URI Too Large`,
   …); the HTTP/2 `SETTINGS` + `WINDOW_UPDATE` fingerprint; `stub_status`, the
-  NGINX Plus API and nginx-module-vts; `X-Accel-*`, cache-status, Kong and
+  NGINX Plus API, nginx-module-vts and nginx Prometheus metrics (`/metrics`);
+  `X-Accel-*`, cache-status, Kong and
   APISIX headers; the ingress-nginx `INGRESSCOOKIE`; and the mail proxy's
   default POP3/IMAP/SMTP greetings.
 - **Weighted, explainable verdicts**: every signal is an evidence item with a
   weight and full provenance (where it was found, how it matched, the matcher,
   the matched snippet, the exact probe and its HTTP status). Weights add up to
   a 0–100 confidence: `confirmed` ≥ 70, `likely` ≥ 50, `possible` ≥ 25.
-- **Deep mode** fingerprints the product and version (including the nginx core
+- **Deep mode** (the default; `--mode detect` is the lighter opt-in that only
+  answers "is it nginx?") fingerprints the product and version (including the nginx core
   inside OpenResty), the release branch (mainline / stable / legacy), a
   distribution packaging hint (`nginx/1.18.0 (Ubuntu)`), the protocols on the
   endpoint (HTTP/1.1, h2, h2c, advertised h3, mail) and observed modules.
 - **Behaviour-based findings** (deep mode): `stub-status-exposed`,
-  `plus-api-exposed`, `vts-status-exposed`, `version-disclosure`,
-  `autoindex-enabled`, `alias-traversal` (off-by-slash `alias`) and
-  `crlf-injection` (`$uri` copied into a response header) — each with a
-  remediation hint.
+  `plus-api-exposed`, `vts-status-exposed`, `metrics-exposed`,
+  `version-disclosure`, `default-page`, `autoindex-enabled`,
+  `alias-traversal` (off-by-slash `alias`), `crlf-injection` (`$uri` copied
+  into a response header), `php-pathinfo` (static files handed to PHP-FPM),
+  `host-header-redirect` (redirects built from the client's `Host`) and
+  exposed files that nginx does not protect by default — `git-exposed`
+  (`/.git/HEAD`), `htpasswd-exposed`, `env-exposed`, `nginx-conf-exposed` and
+  `htaccess-exposed` — each with a remediation hint. The content of an
+  exposed file is validated but never copied into the report.
 - **Vulnerability leads** (deep mode): the complete
   [nginx.org security advisory list](https://nginx.org/en/security_advisories.html)
   (77 advisories, 2009–2026) with the vendor's "vulnerable" ranges and
@@ -68,7 +75,8 @@ anything** and never tries to trigger a memory-safety bug.
   explains each decision; offline **record & replay** of a scan.
 - **Extensible data**: external vulnerability feeds (native JSON, OSV, CSAF)
   and detection-signature packs.
-- **Web GUI** (`--web`) with live results, history, compare and statistics.
+- **Web GUI** (`--web`) with live results, history, compare and statistics;
+  `--vuln-feed` and `--signature-pack` given at start-up apply to its scans.
 - **No external dependencies**: Go standard library only.
 
 ## Install / build
@@ -88,23 +96,27 @@ Without `make`: `go build -o bin/qnginxscanner ./cmd/qnginxscanner`.
 ## Quick start
 
 ```sh
-# Is it nginx? (detect mode: a handful of requests per service)
+# Deep scan (the default): version, branch, protocols, misconfigurations,
+# vulnerability leads
 qnginxscanner example.com
 
-# Deep scan: version, branch, protocols, misconfigurations, vulnerability leads
-qnginxscanner --mode deep --ports 80,443,8080 example.com
+# The same on specific ports
+qnginxscanner --ports 80,443,8080 example.com
+
+# Only: is it nginx? (detect mode: a handful of requests per service)
+qnginxscanner --mode detect example.com
 
 # CI gate: exit 2 if any service runs an NGINX2Root-affected version
-qnginxscanner --mode deep --fail-on nginx2root --targets-file hosts.txt
+qnginxscanner --fail-on nginx2root --targets-file hosts.txt
 
 # Mail proxy: non-HTTP ports are identified from their greeting with --banners
-qnginxscanner --mode deep --banners --ports 25,110,143,80,443 mail.example.com
+qnginxscanner --banners --ports 25,110,143,80,443 mail.example.com
 
 # JSON to a file, plus a PDF report
-qnginxscanner --mode deep --format json --out scan.json --report-out report.pdf 10.0.0.0/28
+qnginxscanner --format json --out scan.json --report-out report.pdf 10.0.0.0/28
 
 # Only well-formed HTTP requests (no raw / HTTP/2-preface fingerprint probes)
-qnginxscanner --mode deep --no-raw example.com
+qnginxscanner --no-raw example.com
 
 # Web GUI on http://127.0.0.1:8088/
 qnginxscanner --web
@@ -180,7 +192,11 @@ the [Wiz analysis](https://wiz.io/blog/nginx-http2-rce-vulnerabilities).
 Every probe is read-only. Nothing is submitted, nothing is brute-forced, and no
 request is designed to crash or corrupt the server.
 
-**Detect mode**, per open port:
+The default scan depth is `deep`, so a plain `qnginxscanner example.com` sends
+the full deep probe set described below. `--mode detect` sends only the
+handful of requests in the first list.
+
+**Both modes** (this is all that `--mode detect` sends), per open port:
 
 - a TCP connect check;
 - `GET` of the target path (default `/`), following redirects;
@@ -193,24 +209,31 @@ request is designed to crash or corrupt the server.
 - `GET /.well-known/security.txt` and `/security.txt` (disable with
   `--security-txt=false`).
 
-**Deep mode** adds:
+**Deep mode** (the default) adds:
 
 - `OPTIONS /`;
-- two more raw requests: an unknown method (`QNGX / HTTP/1.1`) and a 9000-byte
-  request URI;
+- three more raw requests: an unknown method (`QNGX / HTTP/1.1`), a 9000-byte
+  request URI, and `foreign-host` — `GET /` with
+  `Host: qnginxscanner-probe.invalid`, to see whether a redirect is built from
+  the client-supplied Host;
 - the HTTP/2 connection preface with an empty `SETTINGS` frame, to read the
   server's opening frames; no HTTP/2 request is made and the connection is
   closed with `GOAWAY`;
-- `GET` of eight status paths: `/nginx_status`, `/stub_status`,
+- `GET` of nine status paths: `/nginx_status`, `/stub_status`,
   `/basic_status`, `/nginx-status`, `/status`, `/server-status`, `/api/`,
-  `/status/format/json` (plus `/api/<n>/nginx` when `/api/` is the NGINX Plus
-  API);
+  `/status/format/json`, `/metrics` (plus `/api/<n>/nginx` when `/api/` is the
+  NGINX Plus API);
 - the CRLF check: `GET /%0D%0AX-Qnginxscanner-Probe:%20crlf`, which only
   affects its own response;
-- the alias off-by-slash check, for up to three static assets the home page
-  already links to: the asset itself, the same asset via
-  `/<seg>../<seg>/<file>`, and a control path that must not resolve. It only
-  ever re-reads a file that is already public.
+- `GET` of five files nginx serves unless the configuration denies them:
+  `/.git/HEAD`, `/.htpasswd`, `/.htaccess`, `/.env`, `/nginx.conf`. The
+  content is only validated (so a catch-all page is not reported) and is never
+  copied into the report;
+- the alias off-by-slash and PHP path-info checks, for up to three static
+  assets the home page already links to (four requests each): the asset
+  itself, the same asset via `/<seg>../<seg>/<file>`, a control path that must
+  not resolve, and the asset as `<asset>/qnginxscanner.php`. They only ever
+  re-read a file that is already public.
 
 With `--banners`, open ports that do not speak HTTP are read for a greeting
 (after a short wait, a bare CRLF is sent to prompt one).
@@ -218,7 +241,8 @@ With `--banners`, open ports that do not speak HTTP are read for a greeting
 `--no-raw` removes the raw requests and the HTTP/2 preface, leaving only
 well-formed HTTP requests. Raw probes are also skipped automatically when
 `--proxy` is set. `--request-budget N` caps the optional deep probes (status
-paths, CRLF check, alias checks), and a host answering 429/503 skips them.
+paths, CRLF check, sensitive-file checks, alias/path-info checks), and a host
+answering 429/503 skips them.
 
 Requests carry a `User-Agent` that names the tool, so they are easy to find in
 access logs. The malformed raw requests may be logged as errors or counted by a

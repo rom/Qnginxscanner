@@ -9,6 +9,9 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/rom/qnginxscanner/internal/nginx"
+	"github.com/rom/qnginxscanner/internal/scanner"
 )
 
 func TestMain(m *testing.M) {
@@ -152,7 +155,7 @@ func TestHelpers(t *testing.T) {
 	if got := cleanTargets([]string{" a ", "", "b"}); len(got) != 2 {
 		t.Fatalf("cleanTargets: %v", got)
 	}
-	if normMode("deep") != "deep" || normMode("x") != "detect" {
+	if normMode("deep") != "deep" || normMode("") != "deep" || normMode("x") != "deep" || normMode("Detect") != "detect" {
 		t.Fatal("normMode")
 	}
 	if normTLS("on") != "on" || normTLS("off") != "off" || normTLS("x") != "auto" {
@@ -168,4 +171,24 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// TestSetCatalogReachesScans checks that the catalogue given to the server
+// (the built-in data merged with --vuln-feed) is the one GUI scans use.
+func TestSetCatalogReachesScans(t *testing.T) {
+	s := NewServer("127.0.0.1:0")
+	opts, _, err := s.buildOptions(scanRequest{Targets: []string{"example.test"}})
+	if err != nil || opts.Catalog != nil {
+		t.Fatalf("default: catalog=%v err=%v", opts.Catalog, err)
+	}
+	if opts.Mode != scanner.ModeDeep {
+		t.Errorf("default mode = %q, want deep", opts.Mode)
+	}
+	cat := nginx.DefaultCatalog()
+	cat.Merge(&nginx.VulnFeed{Nginx: []nginx.FeedEntry{{ID: "FEED-1", Severity: "high", Title: "t", Affected: []nginx.RangeSpec{{Introduced: "1.0.0"}}}}})
+	s.SetCatalog(cat)
+	opts, _, err = s.buildOptions(scanRequest{Targets: []string{"example.test"}, Mode: "detect"})
+	if err != nil || opts.Catalog != cat || opts.Mode != scanner.ModeDetect {
+		t.Fatalf("catalog not propagated: %v %v %q", opts.Catalog == cat, err, opts.Mode)
+	}
 }

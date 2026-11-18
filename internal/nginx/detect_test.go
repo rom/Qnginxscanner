@@ -422,3 +422,115 @@ func TestRedirectFailureStillAnalysed(t *testing.T) {
 		t.Error("a response with a status must be analysed even when following it failed")
 	}
 }
+
+func TestSensitiveFileFindings(t *testing.T) {
+	root := resp(200, map[string]string{"Server": "nginx"}, "x")
+	nf := resp(404, nil, errorPage("404 Not Found", "nginx"))
+	good := map[string]string{
+		"/.git/HEAD":  "ref: refs/heads/main\n",
+		"/.htpasswd":  "admin:$apr1$abcdefgh$1234567890123456789012\n",
+		"/.htaccess":  "# rules\nRewriteEngine On\nRewriteRule ^a$ b\n",
+		"/.env":       "# app\nAPP_KEY=base64:abc\nDB_PASSWORD=s3cr3tvalue\n",
+		"/nginx.conf": "worker_processes auto;\nevents { }\nhttp {\n server { listen 80; }\n}\n",
+	}
+	extra := map[string]*probe.Response{}
+	for p, body := range good {
+		extra["http://h"+p] = resp(200, nil, body)
+	}
+	d := Analyze(Input{TargetURL: "http://h/", Deep: true, Root: root, NotFound: nf, Extra: extra})
+	for _, id := range []string{"git-exposed", "htpasswd-exposed", "htaccess-exposed", "env-exposed", "nginx-conf-exposed"} {
+		if !hasFinding(d, id) {
+			t.Errorf("missing %s", id)
+		}
+	}
+	for _, f := range d.Findings {
+		if strings.Contains(f.Detail, "s3cr3tvalue") || strings.Contains(f.Detail, "$apr1$") {
+			t.Errorf("finding leaks file content: %+v", f)
+		}
+	}
+	if d.Findings[0].Severity != "high" {
+		t.Errorf("findings must be sorted worst first: %+v", d.Findings[0])
+	}
+
+	// Soft-404s, HTML pages, wrong status and unrelated content are not findings.
+	spa := "<!doctype html><html><body>app</body></html>"
+	bad := map[string]*probe.Response{
+		"http://h/.git/HEAD":  resp(200, nil, spa),
+		"http://h/.htpasswd":  resp(200, nil, "just some text: with a colon\n"),
+		"http://h/.htaccess":  resp(403, nil, "RewriteEngine On\n"),
+		"http://h/.env":       resp(200, nil, "<html>\nAPP_KEY=x\n</html>"),
+		"http://h/nginx.conf": resp(200, nil, ""),
+	}
+	d = Analyze(Input{TargetURL: "http://h/", Deep: true, Root: root, NotFound: nf, Extra: bad})
+	for _, f := range d.Findings {
+		if strings.HasSuffix(f.ID, "-exposed") {
+			t.Errorf("false positive: %+v", f)
+		}
+	}
+	// A catch-all that returns the same body for the missing-URL baseline.
+	same := resp(200, nil, "ref: refs/heads/main\n")
+	d = Analyze(Input{TargetURL: "http://h/", Deep: true, Root: root, NotFound: same,
+		Extra: map[string]*probe.Response{"http://h/.git/HEAD": resp(200, nil, "ref: refs/heads/main\n")}})
+	if hasFinding(d, "git-exposed") {
+		t.Error("baseline-identical body reported")
+	}
+}
+
+func TestPathInfoFinding(t *testing.T) {
+	c := AliasCandidate{Segment: "img", Original: "/img/a.png"}
+	root := resp(200, map[string]string{"Server": "nginx"}, "x")
+	orig := resp(200, map[string]string{"Content-Type": "image/png"}, "PNGDATA")
+	mk := func(pi *probe.Response) *Detection {
+		return Analyze(Input{TargetURL: "http://h/", Deep: true, Root: root, Alias: []AliasProbe{{Candidate: c, Original: orig, PathInfo: pi}}})
+	}
+	if d := mk(resp(200, map[string]string{"Content-Type": "text/html; charset=UTF-8"}, "PNGDATA")); !hasFinding(d, "php-pathinfo") {
+		t.Error("vulnerable case not reported")
+	}
+	if d := mk(resp(404, nil, "nf")); hasFinding(d, "php-pathinfo") {
+		t.Error("404 reported")
+	}
+	if d := mk(resp(200, map[string]string{"Content-Type": "image/png"}, "PNGDATA")); hasFinding(d, "php-pathinfo") {
+		t.Error("same content type (plain static/catch-all) reported")
+	}
+	if d := mk(resp(200, map[string]string{"Content-Type": "text/html"}, "<html>index</html>")); hasFinding(d, "php-pathinfo") {
+		t.Error("different body reported")
+	}
+}
+
+func TestHostHeaderRedirectFinding(t *testing.T) {
+	root := resp(301, map[string]string{"Server": "nginx"}, "")
+	raw := func(status int, loc string) []*probe.RawResponse {
+		return []*probe.RawResponse{{Name: "foreign-host", Request: "GET / HTTP/1.1", Proto: "HTTP/1.1", Status: status,
+			Header: http.Header{"Location": {loc}, "Server": {"nginx"}}}}
+	}
+	if d := Analyze(Input{TargetURL: "http://h/", Deep: true, Root: root, Raw: raw(301, "https://"+ForeignHost+"/")}); !hasFinding(d, "host-header-redirect") {
+		t.Error("reflection not reported")
+	}
+	if d := Analyze(Input{TargetURL: "http://h/", Deep: true, Root: root, Raw: raw(301, "https://www.example.com/")}); hasFinding(d, "host-header-redirect") {
+		t.Error("fixed redirect reported")
+	}
+	if d := Analyze(Input{TargetURL: "http://h/", Deep: true, Root: root, Raw: raw(200, "https://"+ForeignHost+"/")}); hasFinding(d, "host-header-redirect") {
+		t.Error("non-redirect reported")
+	}
+}
+
+func TestMetricsAndDefaultPage(t *testing.T) {
+	metrics := "# HELP nginx_up Status\n# TYPE nginx_up gauge\nnginx_up 1\nnginx_connections_active 3\n"
+	d := Analyze(Input{TargetURL: "http://h/", Deep: true, Root: resp(200, nil, "<html><head><title>Welcome to nginx!</title></head>"),
+		Extra: map[string]*probe.Response{"http://h/metrics": resp(200, nil, metrics)}})
+	if !hasFinding(d, "metrics-exposed") || !hasFinding(d, "default-page") || !hasSignal(d, "status.metrics") || !d.StatusExposed {
+		t.Errorf("metrics/default page: %+v", d.Findings)
+	}
+	ing := `nginx_ingress_controller_build_info{controller_class="k8s.io/ingress-nginx",release="v1.11.2",repository="x"} 1` + "\n"
+	d = Analyze(Input{TargetURL: "http://h/", Deep: true, Root: resp(200, nil, "x"),
+		Extra: map[string]*probe.Response{"http://h/metrics": resp(200, nil, ing)}})
+	if !hasFinding(d, "metrics-exposed") || !strings.Contains(strings.Join(d.Modules, ","), "ingress-nginx 1.11.2") {
+		t.Errorf("ingress metrics: %v %+v", d.Modules, d.Findings)
+	}
+	// Some other application's metrics are not nginx evidence.
+	d = Analyze(Input{TargetURL: "http://h/", Deep: true, Root: resp(200, nil, "x"),
+		Extra: map[string]*probe.Response{"http://h/metrics": resp(200, nil, "go_goroutines 12\nprocess_cpu_seconds_total 3.1\n")}})
+	if hasSignal(d, "status.metrics") || d.IsNginx {
+		t.Error("foreign metrics matched")
+	}
+}

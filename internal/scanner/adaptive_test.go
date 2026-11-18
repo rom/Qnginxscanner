@@ -94,6 +94,7 @@ func TestDeepProbesAndFindings(t *testing.T) {
 	ts, count, port := recordingServer(t, nginxish(map[string]string{
 		"/nginx_status":            stub,
 		"/static../static/app.css": "body{}", // off-by-slash alias
+		"/.git/HEAD":               "ref: refs/heads/main\n",
 	}))
 	defer ts.Close()
 
@@ -102,13 +103,14 @@ func TestDeepProbesAndFindings(t *testing.T) {
 	if svc.Nginx == nil || !svc.Nginx.IsNginx || svc.Nginx.Version != "1.24.0" {
 		t.Fatalf("nginx not detected: %+v", svc.Nginx)
 	}
-	for _, p := range []string{"/qnginxscanner_probe_404", "/nginx_status", "/api/", "/static/app.css", "/static../static/app.css", "/static../qnginxscanner-nx/app.css"} {
+	for _, p := range []string{"/qnginxscanner_probe_404", "/nginx_status", "/api/", "/static/app.css", "/static../static/app.css", "/static../qnginxscanner-nx/app.css",
+		"/static/app.css/qnginxscanner.php", "/.git/HEAD", "/.htpasswd", "/.env", "/metrics"} {
 		if count(p) == 0 {
 			t.Errorf("deep probe %s was not issued", p)
 		}
 	}
 	got := findingIDs(svc)
-	for _, id := range []string{"stub-status-exposed", "alias-traversal", "version-disclosure"} {
+	for _, id := range []string{"stub-status-exposed", "alias-traversal", "version-disclosure", "git-exposed"} {
 		if !got[id] {
 			t.Errorf("missing finding %s (got %v)", id, got)
 		}

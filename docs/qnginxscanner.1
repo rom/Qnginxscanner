@@ -28,9 +28,10 @@ Each signal has a weight; the weights add up to a confidence from 0 to 100
 .PP
 In
 .B deep
-mode it also fingerprints the version, release branch, protocols and modules,
-checks for misconfigurations (exposed status pages, alias traversal, CRLF
-header injection, directory listing), evaluates the release lifecycle, and
+mode, the default, it also fingerprints the version, release branch, protocols
+and modules, checks for misconfigurations (exposed status and metrics pages,
+exposed sensitive files, alias traversal, CRLF header injection, the PHP
+path-info misconfiguration, directory listing), evaluates the release lifecycle, and
 correlates the version against the nginx.org security advisories, including a
 dedicated assessment of the NGINX2Root chain.
 .PP
@@ -66,10 +67,12 @@ A URL target's scheme, port and path are honoured and override the port set.
 .SH OPTIONS
 .SS Scan selection
 .TP
-.BI \-\-mode " detect|deep"
-Scan depth. \fBdetect\fR (default) only decides whether a service is nginx;
-\fBdeep\fR additionally fingerprints version, branch, protocols and modules,
-reports findings, and correlates vulnerabilities including NGINX2Root.
+.BI \-\-mode " deep|detect"
+Scan depth. \fBdeep\fR (default) decides whether a service is nginx and
+additionally fingerprints version, branch, protocols and modules, reports
+findings, and correlates vulnerabilities including NGINX2Root. \fBdetect\fR
+is the lighter mode: it only decides whether a service is nginx, with a
+handful of requests per service.
 .TP
 .BI \-\-ports " spec"
 Ports to check: a single port, a comma-separated list, inclusive ranges, or a
@@ -190,7 +193,7 @@ Retry transient network failures n times with backoff.
 .TP
 .BI \-\-request\-budget " n"
 Cap the optional deep-mode probes per service (status endpoints, the CRLF
-check, the alias checks); they stop once the budget is spent (0 = no cap). A
+check, the sensitive-file checks, the alias and path-info checks); they stop once the budget is spent (0 = no cap). A
 host returning 429/503 skips the optional probes altogether.
 .SS Request shaping
 .TP
@@ -236,8 +239,9 @@ Merge an external vulnerability feed (repeatable). The native
 \fBqnginxscanner-vuln-feed/1\fR schema, OSV records (single or array) and CSAF
 2.0 advisories are auto-detected; from OSV and CSAF only nginx packages are
 kept. Entries are added to the built-in catalogue; a native feed may also
-replace the set of supported branches and their latest releases. Not applied
-to scans started from the web GUI.
+replace the set of supported branches and their latest releases. With
+\fB\-\-web\fR, the feeds are merged into the catalogue used by every scan
+started from the web GUI and by its origin comparison.
 .TP
 .BI \-\-signature\-pack " file|url"
 Load a versioned detection-signature pack (JSON, schema
@@ -292,7 +296,11 @@ Print a shell completion script for \fIshell\fR (bash, zsh or fish) and exit.
 .B \-\-version
 Print version information and exit.
 .SH PROBES
-Every probe is read-only.
+Every probe is read-only. Deep is the default depth, so a scan without
+.B \-\-mode
+sends everything listed here;
+.B \-\-mode detect
+sends only the handful of requests in the next paragraph.
 .PP
 In both modes, each open port receives: a GET of the target path; a GET of
 .IR /qnginxscanner_probe_404 ,
@@ -300,29 +308,64 @@ a guaranteed-missing path that yields the server's own error page; a raw
 HTTP/1.1 request without a Host header; on TLS services, a cleartext HTTP
 request to the TLS port; and the security.txt lookups.
 .PP
-Deep mode adds: an OPTIONS request; a raw request with an unknown method and
-one with a 9000-byte URI; the HTTP/2 connection preface (the server's SETTINGS
+Deep mode adds: an OPTIONS request; a raw request with an unknown method, one
+with a 9000-byte URI and one
+.RB ( foreign\-host )
+with the Host header
+.IR qnginxscanner\-probe.invalid ;
+the HTTP/2 connection preface (the server's SETTINGS
 and WINDOW_UPDATE frames are read, no request is made); GETs of
 .IR /nginx_status ", " /stub_status ", " /basic_status ", " /nginx\-status ", "
-.IR /status ", " /server\-status ", " /api/ " and " /status/format/json ;
+.IR /status ", " /server\-status ", " /api/ ", " /status/format/json " and " /metrics ;
 a CRLF header-injection check whose path contains an encoded CR LF and a marker
-header; and the alias off-by-slash check, which re-requests up to three static
-assets the page already links to through
-.IR /seg../seg/file .
+header; GETs of
+.IR /.git/HEAD ", " /.htpasswd ", " /.htaccess ", " /.env " and " /nginx.conf
+(the content is validated but never copied into the report); and the alias
+off-by-slash and PHP path-info checks, which re-request up to three static
+assets the page already links to (four requests each) through
+.IR /seg../seg/file ,
+a control path, and
+.IR /seg/file/qnginxscanner.php .
 .PP
 .B \-\-no\-raw
 removes the raw requests and the HTTP/2 preface. They are also skipped when
 .B \-\-proxy
 is set.
 .SH FINDINGS
-Deep mode reports these behaviour-based findings:
+Deep mode reports these behaviour-based findings, all from read-only requests:
+.BR git\-exposed " (high, /.git/HEAD is served),"
+.BR htpasswd\-exposed " (high, /.htpasswd),"
+.BR env\-exposed " (high, /.env),"
+.BR php\-pathinfo " (high),"
 .BR alias\-traversal " (high),"
 .BR crlf\-injection " (medium),"
 .BR plus\-api\-exposed " (medium),"
+.BR nginx\-conf\-exposed " (medium, /nginx.conf),"
 .BR stub\-status\-exposed " (low),"
 .BR vts\-status\-exposed " (low),"
+.BR metrics\-exposed " (low, Prometheus metrics at /metrics),"
+.BR htaccess\-exposed " (low, /.htaccess),"
+.BR host\-header\-redirect " (low),"
 .BR autoindex\-enabled " (low),"
-.BR version\-disclosure " (info)."
+.BR version\-disclosure " (info),"
+.BR default\-page " (info, the stock welcome page is served)."
+.PP
+.B php\-pathinfo
+is the nginx + PHP-FPM path-info misconfiguration: a public static asset
+requested as
+.I asset/qnginxscanner.php
+comes back with the same bytes as text/html, so static files are handed to PHP
+and an uploaded file could execute as code.
+.B host\-header\-redirect
+means the foreign-host raw request was answered by a redirect whose Location
+carries the probe's Host: redirects are built from $host or $http_host. It is
+not checked with
+.B \-\-no\-raw
+or
+.BR \-\-proxy .
+nginx ignores .htaccess files, so the rules in an exposed one are not enforced,
+and unlike Apache it does not protect .ht* files or dotfiles by default. The
+content of an exposed file is validated but never copied into the report.
 .SH NGINX2ROOT
 NGINX2Root (Xint, November 2026, https://nginx2root.com/) comprises
 CVE-2026-123007 (HTTP/2 flow-control memory corruption, nginx 1.9.5 to 1.31.8),
@@ -359,17 +402,20 @@ or signature pack, or an I/O error).
 The scan completed but a \fB\-\-fail\-on\fR gate matched.
 .SH EXAMPLES
 .TP
-Is this service nginx?
+Deep scan (the default depth) of the common web ports:
 .B qnginxscanner example.com
 .TP
+Only decide whether the service is nginx:
+.B qnginxscanner \-\-mode detect example.com
+.TP
 Deep scan with a PDF report:
-.B qnginxscanner \-\-mode deep \-\-report\-out report.pdf example.com
+.B qnginxscanner \-\-report\-out report.pdf example.com
 .TP
 Fail a pipeline when any host runs an NGINX2Root-affected version:
-.B qnginxscanner \-\-mode deep \-\-fail\-on nginx2root \-\-targets\-file hosts.txt
+.B qnginxscanner \-\-fail\-on nginx2root \-\-targets\-file hosts.txt
 .TP
 Look for the mail proxy as well as web services:
-.B qnginxscanner \-\-mode deep \-\-banners \-\-ports 25,110,143,80,443 mail.example.com
+.B qnginxscanner \-\-banners \-\-ports 25,110,143,80,443 mail.example.com
 .TP
 Subnet sweep, HTTPS only, JSON to a file:
 .B qnginxscanner \-\-tls on \-\-format json \-\-out scan.json 10.0.0.0/28
@@ -378,7 +424,7 @@ Enumerate and scan subdomains with per-host detail:
 .B qnginxscanner \-\-verbose '*.example.com'
 .TP
 Deep scan with a full audit trail (PCAP capture and decision log):
-.B qnginxscanner \-\-mode deep \-\-pcap scan.pcap \-\-log scan.log example.com
+.B qnginxscanner \-\-pcap scan.pcap \-\-log scan.log example.com
 .TP
 Launch the web GUI:
 .B qnginxscanner \-\-web

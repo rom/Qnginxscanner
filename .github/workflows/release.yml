@@ -1,0 +1,38 @@
+name: release
+
+# Builds and publishes a GitHub release when a version tag (v1.2.3) is pushed.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Check (gofmt, vet, tests)
+        run: make check
+      - name: Build release archives
+        run: make release VERSION="${GITHUB_REF_NAME#v}"
+      - name: Extract release notes
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          awk -v v="$ver" '
+            /^## \[/ { if (found) exit; if (index($0, "[" v "]")) { found = 1; next } }
+            found { print }
+          ' docs/CHANGELOG.md > release-notes.md
+          test -s release-notes.md || echo "Release $GITHUB_REF_NAME" > release-notes.md
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz dist/*.zip dist/SHA256SUMS \
+            --title "qnginxscanner $GITHUB_REF_NAME" --notes-file release-notes.md --verify-tag

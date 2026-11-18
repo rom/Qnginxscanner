@@ -27,6 +27,11 @@ var (
 	reETag = regexp.MustCompile(`^(W/)?"([0-9a-f]{6,10})-([0-9a-f]{1,12})"$`)
 	// reAltSvcH3 finds an HTTP/3 advertisement in Alt-Svc.
 	reAltSvcH3 = regexp.MustCompile(`(?i)\bh3(?:-\d+)?\s*=`)
+	// reExporterMetrics matches Prometheus metrics of the nginx exporters
+	// (nginx-prometheus-exporter, ingress-nginx, nginx-module-vts exporter).
+	reExporterMetrics = regexp.MustCompile(`(?m)^(nginx_connections_active|nginx_up|nginx_http_requests_total|nginxplus_\w+|nginx_ingress_controller_\w+|nginx_vts_\w+)(?:\{[^}]*\})? [-+0-9.eE]+`)
+	// reIngressVersion finds the controller version in ingress-nginx metrics.
+	reIngressVersion = regexp.MustCompile(`nginx_ingress_controller_build_info\{[^}]*release="v?([0-9][^"]*)"`)
 	// reVTSVersion finds the nginx version in nginx-module-vts JSON output.
 	reVTSVersion = regexp.MustCompile(`"nginxVersion"\s*:\s*"(\d+\.\d+\.\d+)"`)
 )

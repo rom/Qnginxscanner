@@ -30,15 +30,22 @@ qphpscanner is not repeated here.
     `504 Gateway Time-out`);
   - the HTTP/2 `SETTINGS` + `WINDOW_UPDATE` fingerprint
     `3:128;4:65536;5:16777215|2147418112`;
-  - exposed `stub_status`, NGINX Plus API and nginx-module-vts endpoints;
+  - exposed `stub_status`, NGINX Plus API and nginx-module-vts endpoints, and
+    Prometheus metrics of nginx-prometheus-exporter, ingress-nginx or the vts
+    exporter at `/metrics` (signal `status.metrics`; the ingress-nginx
+    controller version is listed under modules when disclosed);
   - `X-Accel-*`, cache-status, ngx_pagespeed, Kong and APISIX headers, and the
     ingress-nginx `INGRESSCOOKIE`;
   - the mail proxy's default POP3/IMAP/SMTP greetings (with `--banners`).
 - **Raw probes**: hand-built HTTP/1.x requests whose replies are kept verbatim
-  (`no-host`, `plain-on-tls`, and in deep mode `unknown-method` and
-  `long-uri`), plus an HTTP/2 connection-preface fingerprint. `--no-raw`
+  (`no-host`, `plain-on-tls`, and in deep mode `unknown-method`, `long-uri`
+  and `foreign-host`), plus an HTTP/2 connection-preface fingerprint. `--no-raw`
   (config `no_raw`) restricts a scan to well-formed HTTP requests; raw probes
   are skipped automatically behind `--proxy`.
+- **Scan depth**: `deep` is the default everywhere — the CLI `--mode`, the
+  configuration file, the web GUI's form, and the web API when `mode` is
+  omitted or unknown. `--mode detect` is the opt-in lighter mode that only
+  decides whether a service is nginx, with a handful of requests per service.
 - **Deep-mode fingerprinting**: product and nginx core version (OpenResty is
   mapped to its bundled core), version observations with conflict detection,
   packaging hint, protocols (`http/1.1`, `h2`, `h2c`, advertised `h3`, mail)
@@ -47,6 +54,23 @@ qphpscanner is not repeated here.
   `vts-status-exposed`, `version-disclosure`, `autoindex-enabled`,
   `alias-traversal` (off-by-slash `alias`, proven by re-reading an
   already-public asset) and `crlf-injection`, each with a remediation hint.
+  Further findings, all from read-only `GET`s:
+  - exposed files that nginx serves unless the configuration denies them
+    (unlike Apache it does not protect `.ht*` files or dotfiles by default):
+    `git-exposed` (high, `/.git/HEAD`), `htpasswd-exposed` (high,
+    `/.htpasswd`), `env-exposed` (high, `/.env`), `nginx-conf-exposed`
+    (medium, `/nginx.conf`) and `htaccess-exposed` (low, `/.htaccess`; nginx
+    ignores `.htaccess`, so its rules are not enforced). The content is
+    validated but never copied into the report;
+  - `php-pathinfo` (high): the nginx + PHP-FPM path-info misconfiguration — a
+    public static asset re-requested as `<asset>/qnginxscanner.php` comes back
+    with the same bytes as `text/html`, i.e. static files are handed to PHP
+    and an uploaded file could execute as code;
+  - `host-header-redirect` (low): the `foreign-host` raw probe
+    (`Host: qnginxscanner-probe.invalid`) is answered by a redirect whose
+    `Location` carries that host (redirects built from `$host`/`$http_host`);
+  - `metrics-exposed` (low): nginx Prometheus metrics readable at `/metrics`;
+  - `default-page` (info): the stock welcome page is served.
 - **Vulnerability catalogue** mirroring the nginx.org security advisories (77
   entries, 2009–2026) with the vendor's vulnerable ranges and per-branch fixed
   releases, so stable-branch backports are honoured. Each lead is qualified by
@@ -66,7 +90,9 @@ qphpscanner is not repeated here.
   its latest release is reported `outdated`. `--fail-on eol` gates on it.
 - **Vulnerability feeds** (`--vuln-feed`): the native
   `qnginxscanner-vuln-feed/1` schema (`nginx`, `supported`, `latest`), OSV and
-  CSAF 2.0; only nginx packages are imported from the latter two.
+  CSAF 2.0; only nginx packages are imported from the latter two. Feeds also
+  apply in `--web` mode: they are merged into the catalogue used by every GUI
+  scan and by origin-compare.
 - **Signature packs** (`--signature-pack`, schema
   `qnginxscanner-signature-pack/1`) with header, cookie and body matchers that
   can name a `variant` and a `module`.
@@ -79,6 +105,10 @@ qphpscanner is not repeated here.
   (text, RTF, PDF, HTML), coverage-aware scan diffing with provenance notes,
   resume checkpoints, the PCAP and session-log audit trail, offline corpus
   record and replay, YAML configuration, shell completions and the web GUI.
+- **Release automation**: tagged releases are built by a GitHub Actions
+  workflow (`.github/workflows/release.yml`), which on a `v*` tag runs
+  `make check`, then `make release`, and publishes the archives and
+  `SHA256SUMS` as a GitHub release.
 
 ### Removed (relative to qphpscanner)
 

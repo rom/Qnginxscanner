@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rom/qnginxscanner/internal/nginx"
 	"github.com/rom/qnginxscanner/internal/portspec"
 	"github.com/rom/qnginxscanner/internal/probe"
 	"github.com/rom/qnginxscanner/internal/report"
@@ -44,6 +45,10 @@ type Server struct {
 	authUser string
 	authPass string
 
+	// catalog is the vulnerability/support catalogue every scan started from
+	// the GUI uses (nil = the built-in default).
+	catalog *nginx.Catalog
+
 	mu      sync.Mutex
 	seq     int
 	history []historyItem // newest first
@@ -58,6 +63,11 @@ func NewServer(addr string) *Server {
 func (s *Server) SetAuth(user, pass string) {
 	s.authUser, s.authPass = user, pass
 }
+
+// SetCatalog makes every scan started from the GUI use the given
+// vulnerability catalogue (the built-in one merged with --vuln-feed data).
+// Call it before serving.
+func (s *Server) SetCatalog(c *nginx.Catalog) { s.catalog = c }
 
 // Handler returns the HTTP handler (useful for tests).
 func (s *Server) Handler() http.Handler {
@@ -246,6 +256,7 @@ func (s *Server) buildOptions(req scanRequest) (scanner.Options, []string, error
 		Blocklist:       cleanTargets(req.Block),
 		SNIServerName:   strings.TrimSpace(req.SNI),
 		MaxHostsPerSpec: s.maxTargets,
+		Catalog:         s.catalog,
 	}
 	if rules := cleanTargets(req.Resolve); len(rules) > 0 {
 		parsed, err := parseResolveRules(rules)
@@ -527,6 +538,7 @@ func (s *Server) handleOriginCompare(w http.ResponseWriter, r *http.Request) {
 		SecurityTxt:     req.SecurityTxt,
 		Insecure:        req.Insecure,
 		MaxHostsPerSpec: s.maxTargets,
+		Catalog:         s.catalog,
 	}
 	if req.Mode == "" {
 		base.Mode = scanner.ModeDeep // deep is the most informative for a diff
@@ -659,10 +671,11 @@ func cleanTargets(in []string) []string {
 }
 
 func normMode(m string) string {
-	if strings.ToLower(m) == scanner.ModeDeep {
-		return scanner.ModeDeep
+	// Deep is the default depth; only an explicit "detect" narrows the scan.
+	if strings.ToLower(m) == scanner.ModeDetect {
+		return scanner.ModeDetect
 	}
-	return scanner.ModeDetect
+	return scanner.ModeDeep
 }
 
 func parsePortsField(s string) ([]int, error) {
